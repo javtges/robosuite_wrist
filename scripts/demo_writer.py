@@ -13,7 +13,8 @@ Writes teleop demonstrations to one hdf5 file that both robomimic and robosuite'
         rewards, dones (N,)                 dones[-1] = 1
         obs/<key>, next_obs/<key>           every non-image observation
         teleop/stage  (N,)                  HSA-UMI's stage counter (Space)
-        teleop/mode   (N,)                  0: the input drove the arm, 1: it drove the wrist
+        teleop/mode   (N,)                  what the input drove: 0 arm, 1 wrist, 2 nullspace (the wrist, with the arm
+                                            cancelling it; see nullspace/README.md)
         teleop/wrist_stiffness_scale (N,)   leg stiffness multiplier (x toggles it). Not part of the MuJoCo state:
                                             a replay must set it per step (validate_demos.py does)
 

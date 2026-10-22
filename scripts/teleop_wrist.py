@@ -5,8 +5,12 @@ a 6D keyboard, or a fake input, and record demonstrations to a robomimic / robos
 Follows HSA-UMI's spacemouse_teleop: the input is a velocity that is integrated into an absolute target pose of the
 arm's tcp (a frame fixed to the flange at the wrist's mount plate, like hsa_tcp), clipped to a workspace box, and
 re-seeded onto the arm if the two drift more than --reseed-distance apart. The target is sent as an absolute OSC_POSE
-command in the robot base frame, and it is what gets recorded as the action. The same input can drive the wrist
-instead (m, or both puck buttons): the arm then holds its target, and wrist motion adds on top of it.
+command in the robot base frame, and it is what gets recorded as the action. m (or both puck buttons) cycles what the
+input drives:
+    arm        the arm's tcp target; the wrist holds its pose
+    wrist      the wrist's pose target; the arm holds its target, and wrist motion adds on top of it
+    nullspace  the wrist's pose target, as in wrist mode, while the arm moves the opposite way so the wrist's top plate
+               and the gripper stay still (nullspace/README.md)
 
 Run from this directory. On macOS, use mjpython when the viewer is on:
     mjpython teleop_wrist.py --env Lift --input spacemouse
@@ -14,7 +18,7 @@ Run from this directory. On macOS, use mjpython when the viewer is on:
     python teleop_wrist.py --env Lift --input fake_sine --no-render --max-seconds 10 --key-script "0.5:c,8:s,9:q"
 
 SpaceMouse (HSA-UMI's button modes): left button held = rotate (translation locked); right button held = z allowed
-(otherwise z is locked); both buttons pressed together = toggle arm / wrist.
+(otherwise z is locked); both buttons pressed together = next mode (arm -> wrist -> nullspace -> arm).
 
 Keyboard motion (hold; robot base frame: +x away from the base, +y to its left, +z up):
     i / k  +x / -x      j / l  +y / -y      u / o  +z / -z
@@ -40,10 +44,12 @@ from robosuite.controllers import load_composite_controller_config
 
 from demo_writer import DemoWriter
 from teleop_inputs import FakeSineSource, KeyboardSource, NullSource, SpaceMouseSource, TerminalKeys
+from nullspace import STRATEGIES, NullspaceCompensator
 from teleop_math import clamp_workspace, integrate_target, integrate_wrist_target
 
 ROBOT = "PandaStewartAloha"
-ARM, WRIST = 0, 1
+ARM, WRIST, NULLSPACE = 0, 1, 2
+MODE_NAMES = ("arm", "wrist", "nullspace")
 
 COMMANDS = [
     ("c", "start recording an episode"),
@@ -54,7 +60,7 @@ COMMANDS = [
     ("p", "print the poses and the teleop state"),
     ("r", "re-seed the arm target on the arm"),
     ("x", "toggle the wrist stiff / soft (--soft-scale)"),
-    ("m", "toggle the input between arm and wrist (same as both puck buttons)"),
+    ("m", "next mode: arm -> wrist -> nullspace -> arm (same as both puck buttons)"),
     ("g", "toggle the gripper open / closed"),
     ("h", "send the wrist target home"),
     ("z", "reset the scene (not while recording)"),
@@ -186,6 +192,7 @@ class Teleop:
         self.ticks = 0  # since start; sim time restarts at every scene reset
         self.reset_scene()
         self.box = self.workspace_box()
+        self.nullspace = NullspaceCompensator.from_sim(self.env.sim, self.gripper, self.wrist)
 
     # ---- geometry ----------------------------------------------------------------------------------------------------
 
@@ -243,14 +250,30 @@ class Teleop:
         if hasattr(self, "box"):
             self.target = clamp_workspace(self.target, self.box)
         self.wrist_target = np.zeros(6)
+        self.wrist_command = np.zeros(6)  # what the wrist is sent: the target, or the nullspace feedback command
         self.gripper_closed = False
         self.stage = 0
+        if getattr(self, "mode", ARM) == NULLSPACE:
+            self.anchor_nullspace()
         self._announced_success = False
         self.success_any = False
 
+    def anchor_nullspace(self):
+        """
+        Freezes the plate pose that nullspace mode holds. Feedforward: where the arm's target and the wrist's command
+        put it. Feedback: where the arm actually is (measured tcp) with the wrist's command, so the wrist also absorbs
+        the arm's steady-state tracking error and the plate stays exactly where it was.
+        """
+        tcp = self.measured_tcp() if self.args.nullspace_comp == "feedback" else self.target
+        self.nullspace.anchor(tcp, self.wrist_command)
+
     def toggle_mode(self):
-        self.mode = WRIST if self.mode == ARM else ARM
-        print(f"input drives the {'wrist' if self.mode == WRIST else 'arm'}")
+        self.mode = (self.mode + 1) % 3
+        if self.mode == NULLSPACE:
+            self.anchor_nullspace()
+            print(f"nullspace: input drives the wrist, the arm cancels it ({self.args.nullspace_comp})")
+        else:
+            print(f"input drives the {MODE_NAMES[self.mode]}")
 
     def print_state(self):
         t = self.measured_tcp()
@@ -258,7 +281,7 @@ class Teleop:
         print(
             f"tcp (base frame) pos {t[:3]} rotvec {t[3:]} | target pos {self.target[:3]} rotvec {self.target[3:]}\n"
             f"wrist pose (m, rad) {self.measured_wrist_pose()} | target {self.wrist_target}\n"
-            f"mode {'wrist' if self.mode == WRIST else 'arm'} | wrist {'stiff' if self.stiff else 'soft'} "
+            f"mode {MODE_NAMES[self.mode]} | wrist {'stiff' if self.stiff else 'soft'} "
             f"(x{self.wrist.stiffness_scale:g}) | gripper {'closed' if self.gripper_closed else 'open'} | stage {self.stage} | "
             f"{'RECORDING ' + str(self.writer.num_steps) + ' steps' if self.writer.recording else 'not recording'} | "
             f"{len(self.writer.demo_names)} demos in {self.args.out}"
@@ -330,6 +353,8 @@ class Teleop:
             self.print_state()
         elif key == "r":
             self.target = clamp_workspace(self.measured_tcp(), self.box)
+            if self.mode == NULLSPACE:
+                self.anchor_nullspace()
             print("arm target re-seeded on the arm")
         elif key == "x":
             self.stiff = not self.stiff
@@ -379,7 +404,7 @@ class Teleop:
                 integrate_target(self.target, axes, max_pos_speed=a.max_pos_speed, max_rot_speed=a.max_rot_speed, **kw),
                 self.box,
             )
-        else:
+        else:  # WRIST and NULLSPACE: the input moves the wrist
             self.wrist_target = integrate_wrist_target(
                 self.wrist_target,
                 axes,
@@ -390,6 +415,10 @@ class Teleop:
                 **kw,
             )
 
+        if self.mode == NULLSPACE:
+            # The arm target that keeps the plate on its anchor at this wrist pose (feedforward)
+            self.target = clamp_workspace(self.nullspace.arm_target(self.wrist_target), self.box)
+
         # An arm far from its target is not following it: snap the target onto the arm and start there
         measured = self.measured_tcp()
         dist = float(np.linalg.norm(measured[:3] - self.target[:3]))
@@ -398,10 +427,18 @@ class Teleop:
                 print(f"arm is {dist:.2f} m from the target: re-seeding the target on the arm")
                 self._last_reseed_warn = self.elapsed
             self.target = clamp_workspace(measured, self.box)
+            if self.mode == NULLSPACE:
+                self.anchor_nullspace()
+
+        if self.mode == NULLSPACE and a.nullspace_comp == "feedback":
+            # The wrist also cancels whatever the arm hasn't caught up with yet; equals wrist_target once it has
+            self.wrist_command = self.nullspace.wrist_command(measured)
+        else:
+            self.wrist_command = self.wrist_target
 
         grip = 1.0 if self.gripper_closed else -1.0
         action = self.robot.create_action_vector(
-            {"right": self.target, "right_gripper": np.concatenate([self.wrist_target / self.wrist_limits, [grip]])}
+            {"right": self.target, "right_gripper": np.concatenate([self.wrist_command / self.wrist_limits, [grip]])}
         )
 
         recording = self.writer.recording
@@ -484,6 +521,12 @@ def main():
     p.add_argument("--deadzone", type=float, default=0.0)
     p.add_argument("--print-axes", action="store_true", help="print the raw SpaceMouse axes and buttons every tick")
     p.add_argument("--reseed-distance", type=float, default=0.15, help="m; beyond this the target snaps onto the arm")
+    p.add_argument(
+        "--nullspace-comp",
+        default="feedback",
+        choices=STRATEGIES,
+        help="nullspace mode: feedforward = arm target only; feedback = the wrist also cancels the arm's lag",
+    )
     p.add_argument("--soft-scale", type=float, default=0.3, help="leg stiffness multiplier of the soft wrist (x)")
     p.add_argument("--x-min", type=float, default=0.25)
     p.add_argument("--x-max", type=float, default=0.80)

@@ -7,19 +7,19 @@ cd /Users/jamesavtges/robosuite_wrist
 source robosuite_env/bin/activate      # robosuite (editable, ./robosuite) + robosuite_models are installed here
 ```
 
-From a fresh clone (the wrist code lives in the `robosuite` submodule, a robosuite fork; the venv isn't in git):
+From a fresh clone (robosuite is vendored in `./robosuite`; the venv isn't in git):
 
 ```bash
-git clone --recurse-submodules <this repo> robosuite_wrist     # or, after a plain clone: git submodule update --init
+git clone <this repo> robosuite_wrist
 cd robosuite_wrist
 uv venv robosuite_env --python 3.14
 uv pip install --python robosuite_env/bin/python -r requirements.txt   # exact versions; installs ./robosuite editable
 ```
 
-Changes to the robot / wrist go in the submodule: commit and push them inside `robosuite/` first, then commit the
-updated submodule pointer in this repo (`git add robosuite`). `git status` here shows `modified: robosuite (new
-commits)` or `(modified content)` when the two are out of step. Demos (`demos/`, `*.hdf5`) and `screenshots/` are
-git-ignored.
+`./robosuite` is a copy of ARISE-Initiative/robosuite at commit `5ce6643f` (master, "Merge pull request #816"), with
+its git history removed. The robot / wrist changes are committed directly in this repo, under `robosuite/robosuite/`
+(see "Where the code lives" below). To pull in a later upstream robosuite, diff that commit against the new one and
+apply the result here. Demos (`demos/`, `*.hdf5`) and `screenshots/` are git-ignored.
 
 Run Python from a script file, or from any directory other than the project root. If you run `python -c` / `python -`
 from `/Users/jamesavtges/robosuite_wrist`, Python imports the `robosuite/` repo folder as a namespace package, and you get
@@ -122,7 +122,10 @@ and `teleop_math.py` in that repo), entirely in simulation:
 3. If the arm ends up more than 15 cm from the target, the target snaps back onto the arm (re-seeding).
 4. The target is sent to OSC_POSE as an absolute command. The commanded target is also what gets recorded as the action.
 
-The same input can drive the wrist instead. The arm then holds its target, and the wrist adds its motion on top.
+The same input can drive the wrist instead. The arm then holds its target, and the wrist adds its motion on top. A
+third mode, **nullspace**, also drives the wrist, but the arm moves the opposite way so the gripper stays still in
+space. Its math, implementation and workspace evaluation are in
+[`scripts/nullspace/README.md`](scripts/nullspace/README.md).
 
 Run it from `scripts/`. On macOS the viewer needs `mjpython`, which is in the venv:
 
@@ -150,7 +153,7 @@ bindings.
 | push / twist | moves the target at up to 0.20 m/s and 0.15 rad/s (`--max-pos-speed`, `--max-rot-speed`). In wrist mode the limits are 0.04 m/s and 0.35 rad/s (`--wrist-pos-speed`, `--wrist-rot-speed`). |
 | left button held | rotate only (translation locked) |
 | right button held | z allowed. Without it, z is locked so an accidental push can't drive the tool into the table. |
-| both buttons together | toggle arm / wrist |
+| both buttons together | next mode: arm → wrist → nullspace → arm |
 
 | Keyboard motion (hold; robot base frame: +x away from the base, +y to its left, +z up) | |
 |---|---|
@@ -171,7 +174,7 @@ then restart the terminal. Without it, the script prints a warning and keyboard 
 | `p` | print the tcp and wrist poses, their targets and the teleop state |
 | `r` | re-seed the arm target on the arm |
 | `x` | toggle the wrist stiff (1.0×) / soft (`--soft-scale`, 0.3×) leg stiffness |
-| `m` | toggle the input between arm and wrist (same as both puck buttons) |
+| `m` | next mode: arm → wrist → nullspace → arm (same as both puck buttons). Nullspace mode uses `--nullspace-comp feedback` (default) or `feedforward`. |
 | `g` | toggle the gripper open / closed |
 | `h` | send the wrist target home |
 | `z` | reset the scene (not while recording) |
@@ -237,8 +240,21 @@ cd scripts && python -m pytest test_teleop.py -q
 - the hdf5 writer (save / drop / append)
 - a headless record → validate → replay run
 
+`python -m pytest nullspace/test_nullspace.py -q` runs the nullspace mode's 7 tests (see its README).
+
 For an interactive check without the puck, run `--input fake_sine` or `--input keyboard` with the viewer and try every
 command key.
+
+`python make_teleop_gifs.py` renders the teleop behavior to `screenshots/teleop_*.gif` (~1 min). It drives the real
+`Teleop` loop with a simulated puck: raw readings go through the same HSA axis map and button logic as the real
+device, the mode switch is a both-buttons press, and the gripper uses the `g` key. Each frame has a wide view, a
+close-up that follows the wrist, the mode and puck input, and the measured arm tcp motion and wrist offset (robot
+base frame).
+1. `teleop_1_arm_6d.gif`: the arm in 6D: ±x, ±y, ±z (right button), then rotations (left button).
+2. `teleop_2_wrist.gif`: toggle to the wrist and move it in 6D to its limits. The arm's tcp stays within 0.3 mm.
+3. `teleop_3_gripper.gif`: `g` closes, then opens.
+4. `teleop_4_arm_wrist_offset.gif`: the wrist is left raised 20 mm, rolled and yawed. Toggle back to the arm and move
+   it in 6D; the wrist keeps its offset.
 
 ### When the SpaceMouse is plugged in
 
@@ -259,7 +275,7 @@ command key.
   velocity to its impedance controller.
 - Added:
   - the keyboard and fake inputs
-  - arm/wrist mode (both buttons, `m`)
+  - wrist and nullspace modes (both buttons, `m`)
   - the gripper (`g`), wrist home (`h`) and scene reset (`z`)
   - an automatic scene reset after `s` or a drop
   - `x` scaling the Stewart legs' stiffness, instead of switching HSA servo setpoints

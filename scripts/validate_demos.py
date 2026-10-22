@@ -62,7 +62,7 @@ def summarize(f, names):
         print(
             f"  {name}: {a['num_samples']} steps, {a['duration_s']:.1f} s, success {bool(a['success'])} "
             f"(any {bool(a['success_any'])}), input {a['input']}, stages 0..{g['teleop/stage'][()].max()}, "
-            f"modes {['arm' if m == 0 else 'wrist' for m in modes]}, "
+            f"modes {[('arm', 'wrist', 'nullspace')[m] for m in modes]}, "
             f"wrist stiffness x{scales}, plan {a['plan_row']}, condition {a['condition']!r}"
         )
 
