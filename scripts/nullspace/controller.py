@@ -25,7 +25,10 @@ and, given the arm's MEASURED tcp pose, the wrist pose that puts the plate back 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-STRATEGIES = ("feedforward", "feedback")
+STRATEGIES = ("feedforward", "feedback", "plate")
+# plate strategy: integral rate (1/s) of the wrist-command correction that drives the measured plate pose onto the
+# feedback pose. The wrist settles in 0.04-0.6 s; this sets a ~0.1 s correction time constant on top of that.
+PLATE_RATE = 10.0
 
 
 def make_T(R, p):
@@ -106,9 +109,14 @@ class NullspaceCompensator:
 
     # ---- controller --------------------------------------------------------------------------------------------------
 
-    def anchor(self, tcp_target6, wrist_target):
-        """Freezes the plate pose that the current (commanded) arm and wrist targets produce"""
+    def anchor(self, tcp_target6, wrist_target, wrist_command=None):
+        """
+        Freezes the plate pose that the tcp pose @tcp_target6 and the wrist pose @wrist_target produce. For the plate
+        strategy, pass the measured tcp and the measured wrist pose, plus the wrist's current @wrist_command: the
+        difference (the wrist's deflection under load) seeds the correction, so the command doesn't jump.
+        """
         self.T_B_P0 = self.plate_pose(pose6_to_T(tcp_target6), wrist_target)
+        self.correction = np.zeros(6) if wrist_command is None else np.asarray(wrist_command) - wrist_target
 
     def arm_target(self, wrist_target):
         """Feedforward: the arm tcp target [pos, rotvec] that keeps the plate on the anchor at wrist pose @wrist_target"""
@@ -119,3 +127,17 @@ class NullspaceCompensator:
         wrist's workspace. Equals the wrist target once the arm has caught up with arm_target()."""
         T = self.T_W_S @ inv_T(pose6_to_T(tcp_measured6)) @ self.T_B_P0
         return np.clip(self.p_from_T_W_P(T), -self.limits, self.limits)
+
+    def plate_command(self, p_fb, p_measured, dt, rate=PLATE_RATE):
+        """
+        Plate strategy: the wrist command that makes the *measured* plate pose @p_measured reach the feedback pose
+        @p_fb. A position-controlled soft wrist stops short of its command by its deflection under load (the gripper's
+        weight, contact), which depends on the pose and the stiffness. An integral term learns that offset:
+            c <- c + rate * dt * (p_fb - p_measured),   command = clip(p_fb + c)
+        The integrator stops where the command clips (anti-windup), so the correction never exceeds what the wrist can
+        be sent. Needs the plate pose measured (in the sim, the wrist's passive joints).
+        """
+        self.correction = self.correction + rate * dt * (p_fb - p_measured)
+        command = np.clip(p_fb + self.correction, -self.limits, self.limits)
+        self.correction = command - p_fb
+        return command

@@ -76,8 +76,11 @@ class WristModel:
             ctrl (np.array): current actuator commands (ctrlrange units), one per @actuators entry
 
         Returns:
-            None if the gains are fixed, else (kp, damping): position gain of each actuator and damping of the joint
-                it drives, applied before every sim step
+            None if the gains are fixed, else a dict applied before every sim step:
+                kp (array): position gain of each actuator
+                damping (array): damping of the joint each actuator drives
+                armature (array, optional): armature of the joint each actuator drives
+                joint_damping (dict, optional): raw joint name -> damping, for other (e.g. passive) joints
         """
         return None
 

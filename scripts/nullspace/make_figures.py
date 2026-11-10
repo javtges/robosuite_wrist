@@ -34,8 +34,10 @@ FIGS = os.path.join(HERE, "figures")
 
 # Reference palette (dataviz skill): light surface, ink, hairlines; strategies = neutral baseline + slots 2 and 1
 SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
-COLORS = {"none": "#898781", "feedforward": "#eb6834", "feedback": "#2a78d6"}
-LABELS = {"none": "no compensation (wrist mode)", "feedforward": "nullspace, feedforward", "feedback": "nullspace, feedback"}
+COLORS = {"none": "#898781", "feedforward": "#eb6834", "feedback": "#2a78d6", "plate": "#7d4fd1"}
+LABELS = {"none": "no compensation (wrist mode)", "feedforward": "nullspace, feedforward", "feedback": "nullspace, feedback",
+          "plate": "nullspace, plate feedback"}
+NULLSPACE = ("feedforward", "feedback", "plate")
 GOOD, CRITICAL = "#0ca30c", "#d03b3b"
 BLUES = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf",
          "#1c5cab", "#184f95", "#104281", "#0d366b"]  # fmt: skip
@@ -74,7 +76,7 @@ def save(fig, name):
     path = os.path.join(FIGS, name)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"wrote nullspace/figures/{name}")
+    print(f"wrote {os.path.relpath(path, os.path.dirname(HERE))}")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -128,7 +130,7 @@ def fig_timeseries(hz=20):
     for ax in axes:
         phase_bands(ax, ref)
     handles = [Line2D([], [], color=COLORS[s], lw=2, label=LABELS[s]) for s in COLORS]
-    fig.legend(handles=handles, loc="upper left", ncols=3, bbox_to_anchor=(0.08, 0.955), fontsize=9)
+    fig.legend(handles=handles, loc="upper left", ncols=4, bbox_to_anchor=(0.08, 0.955), fontsize=8.5)
     fig.suptitle("Nullspace mode at the workspace center: one full excursion of every wrist axis", x=0.08, ha="left",
                  y=0.985, fontsize=12, fontweight="bold")  # fmt: skip
     for ax in axes:
@@ -141,7 +143,7 @@ def fig_zoom(hz=20):
     """One excursion (+x) at full resolution: transient and settling"""
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.6), gridspec_kw=dict(wspace=0.3))
     for ax, key, unit in ((axes[0], "plate_dp", "mm"), (axes[1], "plate_drot", "deg")):
-        for s in ("feedforward", "feedback"):
+        for s in NULLSPACE:
             for rate, ls in ((20, "-"), (50, "--")):
                 d = dict(np.load(os.path.join(RESULTS, f"timeseries_{s}_{rate}hz.npz")))
                 idx = np.where(d["phase"] == 0)[0]
@@ -161,9 +163,9 @@ def grid_cases(cases, strategy):
 
 
 def fig_maps(cases, metric, title, fname, vmin, vmax, thresh):
-    strategies = ("none", "feedforward", "feedback")
+    strategies = tuple(COLORS)
     zs = sorted(GRID_Z, reverse=True)
-    fig, axes = plt.subplots(len(zs), 3, figsize=(11, 2.9 * len(zs)), sharey=True,
+    fig, axes = plt.subplots(len(zs), len(strategies), figsize=(14.5, 2.9 * len(zs)), sharey=True,
                              gridspec_kw=dict(hspace=0.32, wspace=0.06))  # fmt: skip
     norm = LogNorm(vmin=vmin, vmax=vmax)
     for j, s in enumerate(strategies):
@@ -243,9 +245,9 @@ def fig_cdf(cases):
 
 
 def fig_3d(cases):
-    fig = plt.figure(figsize=(11, 5))
-    for k, s in enumerate(("feedforward", "feedback")):
-        ax = fig.add_subplot(1, 2, k + 1, projection="3d")
+    fig = plt.figure(figsize=(16, 5))
+    for k, s in enumerate(NULLSPACE):
+        ax = fig.add_subplot(1, 3, k + 1, projection="3d")
         g = grid_cases(cases, s)
         for status, marker, col, lab in (
             ("usable", "o", GOOD, "usable"),
@@ -272,13 +274,13 @@ def fig_orientation(cases):
     oc = [c for c in cases if c["study"] == "orientation"]
     keys = sorted({(c["rot_axis"], c["rot_deg"]) for c in oc}, key=lambda k: ("xyz".index(k[0]), k[1]))
     fig, axes = plt.subplots(2, 1, figsize=(11, 6.2), sharex=True, gridspec_kw=dict(hspace=0.3))
-    width = 0.36
+    width = 0.27
     for ax, metric, label in ((axes[0], "settled_plate_pos_mm", "settled position error (mm)"),
                               (axes[1], "settled_plate_rot_deg", "settled orientation error (deg)")):  # fmt: skip
-        for k, s in enumerate(("feedforward", "feedback")):
+        for k, s in enumerate(NULLSPACE):
             by = {(c["rot_axis"], c["rot_deg"]): c for c in oc if c["strategy"] == s}
             vals = [by[key][metric] if key in by else np.nan for key in keys]
-            xs = np.arange(len(keys)) + (k - 0.5) * width
+            xs = np.arange(len(keys)) + (k - 1) * width
             ax.bar(xs, vals, width=width - 0.04, color=COLORS[s], label=LABELS[s])
             for x, key, v in zip(xs, keys, vals):
                 c = by.get(key)
@@ -292,7 +294,7 @@ def fig_orientation(cases):
     axes[1].set_xticks(range(len(keys)), [f"{a} {d:+.0f}°" for a, d in keys])
     axes[1].set_xlabel("tool orientation: rotation about the robot base axis from 'gripper down' (tcp at the workspace center)")
     axes[0].set_title("Tool orientation study (— above a bar: the arm can't reach that tool pose at all)")
-    axes[0].legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.0, 1.32), ncols=2)
+    axes[0].legend(fontsize=9, loc="upper right", bbox_to_anchor=(1.0, 1.32), ncols=3)
     save(fig, "orientation_study.png")
 
 
@@ -301,16 +303,16 @@ def fig_rate(cases):
     metrics = [("peak_plate_pos_mm", "peak pos (mm)"), ("peak_plate_rot_deg", "peak rot (deg)"),
                ("settled_plate_pos_mm", "settled pos (mm)"), ("settled_plate_rot_deg", "settled rot (deg)"),
                ("final_plate_pos_mm", "back at start (mm)")]  # fmt: skip
-    fig, axes = plt.subplots(1, len(metrics), figsize=(13, 3.4), gridspec_kw=dict(wspace=0.45))
+    fig, axes = plt.subplots(1, len(metrics), figsize=(15, 3.4), gridspec_kw=dict(wspace=0.45))
     shades = {20.0: "#86b6ef", 50.0: "#1c5cab"}
     for ax, (m, lab) in zip(axes, metrics):
-        for k, s in enumerate(("none", "feedforward", "feedback")):
+        for k, s in enumerate(COLORS):
             for r, hz in enumerate((20.0, 50.0)):
                 c = next((c for c in cc if c["strategy"] == s and c["control_freq"] == hz), None)
                 if c is None:
                     continue
                 ax.bar(k + (r - 0.5) * 0.38, max(c[m], 1e-3), width=0.34, color=shades[hz])
-        ax.set_xticks(range(3), ["none", "feed-\nforward", "feed-\nback"], fontsize=8.5)
+        ax.set_xticks(range(4), ["none", "feed-\nforward", "feed-\nback", "plate"], fontsize=8.5)
         ax.set_yscale("log")
         ax.set_title(lab, fontsize=9.5)
     fig.legend(handles=[Patch(color=c, label=f"{int(hz)} Hz control") for hz, c in shades.items()], ncols=2,
@@ -351,11 +353,18 @@ def summary(cases):
                      f"{c['settled_plate_pos_mm']:.2f} | {c['settled_plate_rot_deg']:.2f} | {c['final_plate_pos_mm']:.3f} |")  # fmt: skip
     path = os.path.join(RESULTS, "summary.md")
     open(path, "w").write("\n".join(lines) + "\n")
-    print("wrote nullspace/results/summary.md")
+    print(f"wrote {os.path.relpath(path, os.path.dirname(HERE))}")
     print("\n".join(lines))
 
 
 def main():
+    global RESULTS, FIGS
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--no-gripper", action="store_true", help="from results_nogripper/, to figures_nogripper/")
+    if p.parse_args().no_gripper:
+        RESULTS, FIGS = os.path.join(HERE, "results_nogripper"), os.path.join(HERE, "figures_nogripper")
     cases = load_cases()
     fig_timeseries()
     fig_zoom()

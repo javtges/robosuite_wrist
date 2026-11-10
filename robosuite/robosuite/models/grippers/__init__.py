@@ -21,7 +21,10 @@ from .wrist_gripper import (
     StewartAlohaGripper,
     StewartAlohaGripperLegControl,
     StewartAlohaGripperLockedWrist,
+    StewartWristNoGripper,
+    StewartWristKey,
 )
+from .key_tool import KeyConfig, KeyTool
 
 GRIPPER_MAPPING = {
     "RethinkGripper": RethinkGripper,
@@ -43,6 +46,8 @@ GRIPPER_MAPPING = {
     "StewartAlohaGripper": StewartAlohaGripper,
     "StewartAlohaGripperLegControl": StewartAlohaGripperLegControl,
     "StewartAlohaGripperLockedWrist": StewartAlohaGripperLockedWrist,
+    "StewartWristNoGripper": StewartWristNoGripper,
+    "StewartWristKey": StewartWristKey,
     None: NullGripper,
 }
 

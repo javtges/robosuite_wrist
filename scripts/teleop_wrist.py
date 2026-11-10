@@ -24,6 +24,9 @@ Keyboard motion (hold; robot base frame: +x away from the base, +y to its left, 
     i / k  +x / -x      j / l  +y / -y      u / o  +z / -z
     [ / ]  +rot x / -   up / down  +rot y / -   left / right  +rot z / -
 Command keys are read from the terminal, so keep the terminal focused (the viewer window has its own key bindings).
+
+The viewer shows the wrench the wrist and gripper apply to the Franka's flange (MuJoCo's own interaction force between
+the wrist base and the arm), the wrist's leg stiffness and its deflection under load; f also prints it in the terminal.
 """
 
 import argparse
@@ -58,6 +61,7 @@ COMMANDS = [
     ("Space", "stage + 1"),
     ("n", "skip to the next plan row (--plan)"),
     ("p", "print the poses and the teleop state"),
+    ("f", "print the flange force every 0.5 s (on / off); the viewer always shows it"),
     ("r", "re-seed the arm target on the arm"),
     ("x", "toggle the wrist stiff / soft (--soft-scale)"),
     ("m", "next mode: arm -> wrist -> nullspace -> arm (same as both puck buttons)"),
@@ -84,8 +88,8 @@ class PassiveViewer:
             sys.exit("On macOS the viewer needs mjpython: run `mjpython <script> ...` (or pass --no-render).")
         self.handle, self.model = None, None
 
-    def sync(self, sim):
-        """Returns False once the user has closed the window"""
+    def sync(self, sim, texts=None):
+        """Returns False once the user has closed the window. texts: overlay, as mujoco.viewer's set_texts takes it."""
         model, data = sim.model._model, sim.data._data
         if self.handle is not None and self.model is not model:
             self.close()
@@ -106,6 +110,8 @@ class PassiveViewer:
                 setattr(self.handle.cam, k, v)
         if not self.handle.is_running():
             return False
+        if texts is not None:
+            self.handle.set_texts(texts)
         self.handle.sync()
         return True
 
@@ -125,6 +131,7 @@ def make_env_args(args):
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
     env_kwargs = dict(
         robots=[ROBOT],
+        **({"gripper_types": "StewartWristNoGripper"} if getattr(args, "no_gripper", False) else {}),
         controller_configs=cfg,
         control_freq=args.control_freq,
         use_camera_obs=False,
@@ -190,6 +197,7 @@ class Teleop:
         self._both_prev = False
         self._last_reseed_warn = -1e9
         self.ticks = 0  # since start; sim time restarts at every scene reset
+        self.print_forces = getattr(args, "print_forces", False)
         self.reset_scene()
         self.box = self.workspace_box()
         self.nullspace = NullspaceCompensator.from_sim(self.env.sim, self.gripper, self.wrist)
@@ -213,12 +221,46 @@ class Teleop:
         return R0.T @ self.env.sim.data.get_body_xmat(self.gripper.correct_naming(self.wrist_base_body))
 
     @property
+    def has_gripper(self):
+        """False with --no-gripper: the wrist carries nothing, and the action has no grip dimension"""
+        return self.gripper.gripper.dof > 0
+
+    @property
     def wrist_base_body(self):
         return self.gripper.worldbody[0].get("name")[len(self.gripper.naming_prefix) :]
 
     def measured_wrist_pose(self):
         names = [f"wrist_top_{a}" for a in ("x", "y", "z", "rx", "ry", "rz")]
         return np.array([self.env.sim.data.get_joint_qpos(self.gripper.correct_naming(n)) for n in names])
+
+    def flange_wrench(self):
+        """(total, external) wrench the wrist applies to the Franka's flange: WristGripperModel.flange_wrench"""
+        return self.gripper.flange_wrench(self.env.sim)
+
+    def leg_stiffness(self):
+        """The wrist legs' current spring constants (N/m), read from the MuJoCo position actuators' gains"""
+        m = self.env.sim.model._model
+        ids = [m.actuator(self.gripper.correct_naming(a)).id for a in self.wrist.actuators]
+        return m.actuator_gainprm[ids, 0].copy()
+
+    def wrist_deflection(self):
+        """Measured top-plate pose minus its command: how far the load pushes the wrist off its target (m, rad)"""
+        return self.measured_wrist_pose() - self.wrist_command
+
+    def force_lines(self):
+        """(label, value) rows of the flange-force readout"""
+        total, ext = self.flange_wrench()
+        k = self.leg_stiffness() / 1e3
+        defl = self.wrist_deflection()
+        v = lambda x: "[" + " ".join(f"{c:+7.2f}" for c in x) + "]"
+        return [
+            ("flange force on the Franka", "(flange frame, +z toward the gripper)"),
+            ("external force (N)", f"{v(ext[3:])}  |F| {np.linalg.norm(ext[3:]):6.2f}"),
+            ("external moment (N m)", f"{v(ext[:3])}  |M| {np.linalg.norm(ext[:3]):6.2f}"),
+            ("total force, with weight (N)", f"{v(total[3:])}  |F| {np.linalg.norm(total[3:]):6.2f}"),
+            ("wrist leg stiffness (kN/m)", f"{k.min():.1f} - {k.max():.1f}  (x{self.wrist.stiffness_scale:g})"),
+            ("wrist deflection", f"{np.linalg.norm(defl[:3]) * 1e3:.3f} mm  {np.degrees(np.linalg.norm(defl[3:])):.3f} deg"),
+        ]
 
     def workspace_box(self):
         a = self.args
@@ -232,13 +274,19 @@ class Teleop:
                 m, d = self.env.sim.model._model, self.env.sim.data._data
                 tcp_z = d.site_xpos[m.site(self.gripper.important_sites["tcp"]).id][2]
                 lowest = min(
-                    d.geom_xpos[i][2] - m.geom_rbound[i]
-                    for i in range(m.ngeom)
-                    if m.geom(i).name.startswith(self.gripper.naming_prefix)
-                    and "wrist" not in m.geom(i).name
-                    and m.geom_contype[i]
-                    and m.geom_rbound[i] < 0.05
+                    (
+                        d.geom_xpos[i][2] - m.geom_rbound[i]
+                        for i in range(m.ngeom)
+                        if m.geom(i).name.startswith(self.gripper.naming_prefix)
+                        and "wrist" not in m.geom(i).name
+                        and m.geom_contype[i]
+                        and m.geom_rbound[i] < 0.05
+                    ),
+                    default=None,
                 )
+                if lowest is None:  # no gripper: the top plate's face (pointing down) is the lowest point
+                    plate = m.geom(self.gripper.correct_naming("wrist_top_col")).id
+                    lowest = d.geom_xpos[plate][2] - m.geom_size[plate][1]
                 box["z_min"] = floor - self.base_pose()[0][2] + (tcp_z - lowest) + a.floor_margin
         return box
 
@@ -264,10 +312,19 @@ class Teleop:
         put it. Feedback: where the arm actually is (measured tcp) with the wrist's command, so the wrist also absorbs
         the arm's steady-state tracking error and the plate stays exactly where it was.
         """
-        tcp = self.measured_tcp() if self.args.nullspace_comp == "feedback" else self.target
+        comp = self.args.nullspace_comp
+        if comp == "plate":
+            # The plate where it actually is; the operator's wrist target becomes that measured pose
+            measured = self.measured_wrist_pose()
+            self.nullspace.anchor(self.measured_tcp(), measured, self.wrist_command)
+            self.wrist_target = measured.copy()
+            return
+        tcp = self.measured_tcp() if comp == "feedback" else self.target
         self.nullspace.anchor(tcp, self.wrist_command)
 
     def toggle_mode(self):
+        if self.mode == NULLSPACE:
+            self.wrist_target = self.wrist_command.copy()  # the wrist keeps exactly what it was sent: no jump
         self.mode = (self.mode + 1) % 3
         if self.mode == NULLSPACE:
             self.anchor_nullspace()
@@ -286,6 +343,10 @@ class Teleop:
             f"{'RECORDING ' + str(self.writer.num_steps) + ' steps' if self.writer.recording else 'not recording'} | "
             f"{len(self.writer.demo_names)} demos in {self.args.out}"
         )
+        self.print_force_lines()
+
+    def print_force_lines(self):
+        print("\n".join(f"  {label:30s} {value}" for label, value in self.force_lines()))
 
     def plan_row(self):
         return self.plan[self.plan_idx] if self.plan_idx < len(self.plan) else None
@@ -351,6 +412,9 @@ class Teleop:
                 self.announce_plan()
         elif key == "p":
             self.print_state()
+        elif key == "f":
+            self.print_forces = not self.print_forces
+            print(f"flange force printout {'on' if self.print_forces else 'off'}")
         elif key == "r":
             self.target = clamp_workspace(self.measured_tcp(), self.box)
             if self.mode == NULLSPACE:
@@ -363,6 +427,9 @@ class Teleop:
         elif key in ("m", "tab"):
             self.toggle_mode()
         elif key == "g":
+            if not self.has_gripper:
+                print("no gripper (--no-gripper)")
+                return True
             self.gripper_closed = not self.gripper_closed
             print(f"gripper {'closing' if self.gripper_closed else 'opening'}")
         elif key == "h":
@@ -430,15 +497,18 @@ class Teleop:
             if self.mode == NULLSPACE:
                 self.anchor_nullspace()
 
-        if self.mode == NULLSPACE and a.nullspace_comp == "feedback":
+        if self.mode == NULLSPACE and a.nullspace_comp in ("feedback", "plate"):
             # The wrist also cancels whatever the arm hasn't caught up with yet; equals wrist_target once it has
             self.wrist_command = self.nullspace.wrist_command(measured)
+            if a.nullspace_comp == "plate":
+                # ...and its own deflection under load, from the measured plate pose
+                self.wrist_command = self.nullspace.plate_command(self.wrist_command, self.measured_wrist_pose(), 1.0 / self.hz)
         else:
             self.wrist_command = self.wrist_target
 
-        grip = 1.0 if self.gripper_closed else -1.0
+        grip = [1.0 if self.gripper_closed else -1.0] if self.has_gripper else []
         action = self.robot.create_action_vector(
-            {"right": self.target, "right_gripper": np.concatenate([self.wrist_command / self.wrist_limits, [grip]])}
+            {"right": self.target, "right_gripper": np.concatenate([self.wrist_command / self.wrist_limits, grip])}
         )
 
         recording = self.writer.recording
@@ -456,7 +526,14 @@ class Teleop:
             self._announced_success = True
         self.success_any |= success and recording
         self.ticks += 1
-        if self.viewer is not None and not self.viewer.sync(self.env.sim):
+        if self.print_forces and self.ticks % max(1, round(0.5 * self.hz)) == 0:
+            self.print_force_lines()
+        texts = None
+        if self.viewer is not None:
+            rows = self.force_lines()
+            font, pos = mujoco.mjtFontScale.mjFONTSCALE_150, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT
+            texts = [(font, pos, "\n".join(r[0] for r in rows), "\n".join(r[1] for r in rows))]
+        if self.viewer is not None and not self.viewer.sync(self.env.sim, texts):
             print("viewer closed")
             return False
         return True
@@ -520,12 +597,15 @@ def main():
     p.add_argument("--axis-map", default="hsa", choices=["hsa", "zup"], help="SpaceMouse axes -> robot (see teleop_math)")
     p.add_argument("--deadzone", type=float, default=0.0)
     p.add_argument("--print-axes", action="store_true", help="print the raw SpaceMouse axes and buttons every tick")
+    p.add_argument("--print-forces", action="store_true", help="start with the flange force printout on (f toggles it)")
+    p.add_argument("--no-gripper", action="store_true", help="the wrist without a gripper (gripper_types StewartWristNoGripper)")
     p.add_argument("--reseed-distance", type=float, default=0.15, help="m; beyond this the target snaps onto the arm")
     p.add_argument(
         "--nullspace-comp",
-        default="feedback",
+        default="plate",
         choices=STRATEGIES,
-        help="nullspace mode: feedforward = arm target only; feedback = the wrist also cancels the arm's lag",
+        help="nullspace mode: feedforward = arm target only; feedback = the wrist also cancels the arm's lag; "
+        "plate = feedback, plus the wrist cancels its own deflection under load, from the measured plate pose",
     )
     p.add_argument("--soft-scale", type=float, default=0.3, help="leg stiffness multiplier of the soft wrist (x)")
     p.add_argument("--x-min", type=float, default=0.25)

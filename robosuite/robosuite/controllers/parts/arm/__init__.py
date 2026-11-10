@@ -1,2 +1,3 @@
 from .osc import OperationalSpaceController
+from .cartesian_impedance import CartesianImpedanceController
 from .ik import InverseKinematicsController

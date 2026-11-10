@@ -4,7 +4,7 @@ GIF of the nullspace teleop mode: figures/nullspace_demo.gif.
     cd scripts && python -m nullspace.make_demo_gif
 
 The same puck input (wrist x, z, roll, yaw to their limits and back) is shown twice: first in wrist mode (the arm holds
-still, so the gripper moves with the wrist), then in nullspace mode with feedback compensation (the arm moves the
+still, so the gripper moves with the wrist), then in nullspace mode with plate-feedback compensation (the arm moves the
 opposite way, so the gripper stays still). The right-hand close-up is fixed in the world at the gripper's starting
 position, so a still gripper looks still while the flange and the wrist's base move around it.
 """
@@ -64,7 +64,7 @@ def sequence(rec):
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         t = mg.make_teleop(os.path.join(tmp, "unused.hdf5"))
-        t.args.nullspace_comp = "feedback"
+        t.args.nullspace_comp = "plate"
         for _ in range(20):
             t.tick()
         rec = NullspaceRecorder(t)

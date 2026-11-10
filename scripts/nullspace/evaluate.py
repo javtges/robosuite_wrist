@@ -5,6 +5,7 @@ so the input path, the button modes and the arm controller are exactly what an o
 
     cd scripts && python -m nullspace.evaluate              # full study, ~5 min on 10 cores -> nullspace/results/
     python -m nullspace.evaluate --quick                     # 8 points, for a smoke test
+    python -m nullspace.evaluate --no-gripper                # the wrist with nothing on it -> nullspace/results_nogripper/
 
 For every test case (a tool pose + a strategy + a control rate):
     1. Reset the scene, move the cube out of the way, drive the arm (arm mode) to the tool pose, let it settle.
@@ -37,6 +38,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 RESULTS = os.path.join(HERE, "results")
 
+
+def results_dir(no_gripper=False):
+    return os.path.join(HERE, "results_nogripper") if no_gripper else RESULTS
+
 # Usability thresholds (see README.md, "What counts as usable")
 SETTLED_POS_MM, SETTLED_ROT_DEG = 1.0, 0.5
 FINAL_POS_MM, FINAL_ROT_DEG = 0.5, 0.25
@@ -53,23 +58,24 @@ CENTER = (0.48, 0.0, 0.22)
 ORIENTATIONS = [("x", a) for a in (-40, -20, 20, 40)] + [("y", a) for a in (-40, -20, 20, 40)] + [
     ("z", a) for a in (-135, -90, -45, 45, 90, 135)
 ]
-STRATEGY_MODES = {"none": "WRIST", "feedforward": "NULLSPACE", "feedback": "NULLSPACE"}
+STRATEGY_MODES = {"none": "WRIST", "feedforward": "NULLSPACE", "feedback": "NULLSPACE", "plate": "NULLSPACE"}
 
 
-def _make_teleop(control_freq):
+def _make_teleop(control_freq, no_gripper=False):
     sys.path.insert(0, SCRIPTS)
     import make_teleop_gifs as mg
 
-    return mg.make_teleop(os.path.join(tempfile.mkdtemp(), "unused.hdf5"), control_freq=control_freq)
+    return mg.make_teleop(os.path.join(tempfile.mkdtemp(), "unused.hdf5"), control_freq=control_freq, no_gripper=no_gripper)
 
 
 _TELEOPS = {}
 
 
-def get_teleop(control_freq):
-    if control_freq not in _TELEOPS:
-        _TELEOPS[control_freq] = _make_teleop(control_freq)
-    return _TELEOPS[control_freq]
+def get_teleop(control_freq, no_gripper=False):
+    key = (control_freq, no_gripper)
+    if key not in _TELEOPS:
+        _TELEOPS[key] = _make_teleop(control_freq, no_gripper)
+    return _TELEOPS[key]
 
 
 def run_case(case):
@@ -77,7 +83,7 @@ def run_case(case):
     import teleop_wrist as tw
     from nullspace.controller import make_T, pose_error
 
-    t = get_teleop(case["control_freq"])
+    t = get_teleop(case["control_freq"], case.get("no_gripper", False))
     t.args.nullspace_comp = case["strategy"] if case["strategy"] != "none" else "feedback"
     hz = t.hz
     env, d, puck = t.env, t.env.sim.data, t.input
@@ -238,10 +244,14 @@ def _worker(case):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--quick", action="store_true")
+    p.add_argument("--no-gripper", action="store_true", help="the wrist without a gripper; results go to results_nogripper/")
     p.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     args = p.parse_args()
-    os.makedirs(RESULTS, exist_ok=True)
+    out = results_dir(args.no_gripper)
+    os.makedirs(out, exist_ok=True)
     cases = build_cases(args.quick)
+    for c in cases:
+        c["no_gripper"] = args.no_gripper
     print(f"{len(cases)} test cases on {args.workers} workers")
     t0 = time.time()
     rows = []
@@ -251,17 +261,17 @@ def main():
             if "error" in metrics:
                 print(f"  case {case['case_id']} FAILED: {metrics['error']}")
             if ts is not None:
-                np.savez(os.path.join(RESULTS, f"timeseries_{case['strategy']}_{int(case['control_freq'])}hz.npz"), **ts)
+                np.savez(os.path.join(out, f"timeseries_{case['strategy']}_{int(case['control_freq'])}hz.npz"), **ts)
             if (i + 1) % 20 == 0 or i + 1 == len(cases):
                 print(f"  {i + 1}/{len(cases)} done ({time.time() - t0:.0f} s)")
     rows.sort(key=lambda r: r["case_id"])
     keys = list(next(r for r in rows if "error" not in r).keys())
-    with open(os.path.join(RESULTS, "cases.csv"), "w", newline="") as f:
+    with open(os.path.join(out, "cases.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=keys + ["error"], extrasaction="ignore")
         w.writeheader()
         for r in rows:
             w.writerow({k: (f"{v:.6g}" if isinstance(v, float) else v) for k, v in r.items()})
-    print(f"wrote {os.path.relpath(os.path.join(RESULTS, 'cases.csv'), SCRIPTS)} ({time.time() - t0:.0f} s)")
+    print(f"wrote {os.path.relpath(os.path.join(out, 'cases.csv'), SCRIPTS)} ({time.time() - t0:.0f} s)")
 
 
 if __name__ == "__main__":

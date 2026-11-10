@@ -13,8 +13,16 @@ From a fresh clone (robosuite is vendored in `./robosuite`; the venv isn't in gi
 git clone <this repo> robosuite_wrist
 cd robosuite_wrist
 uv venv robosuite_env --python 3.14
-uv pip install --python robosuite_env/bin/python -r requirements.txt   # exact versions; installs ./robosuite editable
+uv pip install --python robosuite_env/bin/python -r requirements_macos.txt   # macOS
+uv pip install --python robosuite_env/bin/python -r requirements.txt         # Linux
 ```
+
+Both files install `./robosuite` in editable mode, and the versions are exact. `requirements.txt` holds the packages
+for every platform. `requirements_macos.txt` includes it and adds the `pyobjc-*` packages, which exist only on macOS.
+On Linux, `requirements.txt` also installs `evdev` and `python-xlib` (pynput's Linux backends) as minimum versions,
+not pins. `evdev` may compile from source, which needs a C compiler and the Python and kernel headers (on Debian or
+Ubuntu: `sudo apt install build-essential python3-dev linux-libc-dev`). The venv is platform-specific: build a new one
+on each machine, and don't copy `robosuite_env/` between macOS and Linux.
 
 `./robosuite` is a copy of ARISE-Initiative/robosuite at commit `5ce6643f` (master, "Merge pull request #816"), with
 its git history removed. The robot / wrist changes are committed directly in this repo, under `robosuite/robosuite/`
@@ -93,6 +101,17 @@ grasp press would also drive the wrist to a corner of its workspace. `scripts/te
 that problem and drives the arm, the wrist and the gripper. Use this variant as well for any pipeline that assumes
 `[pos3, rot3, grip1]` actions, such as MimicGen's default robosuite interface.
 
+### No-gripper variant (12-dim: the wrist with nothing on it)
+
+```python
+env = suite.make("Lift", robots="PandaStewartAloha", gripper_types="StewartWristNoGripper")
+```
+
+The wrist's top plate carries nothing, so nothing loads or deflects the soft wrist. A massless `NullGripper` keeps the
+`grip_site` frame (at the top plate) that robosuite and the scripts expect. The action is the arm's 6 dims plus the
+wrist's 6, with no grip dimension. The switch is the `attach_gripper` class attribute on `StewartAlohaGripper`, which
+this variant sets to `False`. In the teleop and the nullspace evaluation, pass `--no-gripper`; there, `g` does nothing.
+
 ### Observations
 
 - `robot0_eef_pos` / `robot0_eef_quat`: the true `grip_site`, between the ALOHA fingerpads. It includes wrist motion.
@@ -124,10 +143,11 @@ and `teleop_math.py` in that repo), entirely in simulation:
 
 The same input can drive the wrist instead. The arm then holds its target, and the wrist adds its motion on top. A
 third mode, **nullspace**, also drives the wrist, but the arm moves the opposite way so the gripper stays still in
-space. Its math, implementation and workspace evaluation are in
+space. "Nullspace mode" below says how to run it. Its math, implementation and workspace evaluation are in
 [`scripts/nullspace/README.md`](scripts/nullspace/README.md).
 
-Run it from `scripts/`. On macOS the viewer needs `mjpython`, which is in the venv:
+Run it from `scripts/`. On macOS the viewer needs `mjpython`, which is in the venv. On Linux, use `python` in every
+command below (see "Running on Linux").
 
 ```bash
 cd /Users/jamesavtges/robosuite_wrist/scripts
@@ -171,10 +191,11 @@ then restart the terminal. Without it, the script prints a warning and keyboard 
 | Backspace | drop the episode in progress (then reset the scene), or the last saved demo if not recording |
 | Space | stage + 1 (recorded per step) |
 | `n` | skip to the next plan row (`--plan rows.csv`: one row per episode, advances on save, stored with the demo) |
-| `p` | print the tcp and wrist poses, their targets and the teleop state |
+| `p` | print the tcp and wrist poses, their targets and the teleop state, and the flange force |
+| `f` | print the flange force every 0.5 s (on / off; `--print-forces` starts it on). The viewer always shows it. |
 | `r` | re-seed the arm target on the arm |
 | `x` | toggle the wrist stiff (1.0×) / soft (`--soft-scale`, 0.3×) leg stiffness |
-| `m` | next mode: arm → wrist → nullspace → arm (same as both puck buttons). Nullspace mode uses `--nullspace-comp feedback` (default) or `feedforward`. |
+| `m` | next mode: arm → wrist → nullspace → arm (same as both puck buttons). Nullspace mode uses `--nullspace-comp plate` (default), `feedback` or `feedforward`. |
 | `g` | toggle the gripper open / closed |
 | `h` | send the wrist target home |
 | `z` | reset the scene (not while recording) |
@@ -187,6 +208,135 @@ wrist's frame, so a given push moves the tool the same way in both modes, just s
 The workspace box defaults to x 0.25–0.80 m, y ±0.40 m and z up to 0.60 m in the robot base frame. The floor (z-min)
 is computed from the task's table or bin height, so the gripper's lowest point just touches it with the wrist at home.
 The script prints the box at startup; override any edge with `--x-min` ... `--z-max`.
+
+### Nullspace mode
+
+To try nullspace mode without a SpaceMouse, start with the keyboard or with fake_sine, then press `m` twice in the
+terminal (arm → wrist → nullspace):
+
+```bash
+cd /Users/jamesavtges/robosuite_wrist/scripts
+source ../robosuite_env/bin/activate
+
+mjpython teleop_wrist.py --env Lift --input keyboard    # m twice, then hold i/k, j/l, u/o, [ ], arrow keys
+mjpython teleop_wrist.py --env Lift --input fake_sine   # m twice; the wrist traces a slow x-y circle
+mjpython teleop_wrist.py --env Lift --input keyboard --nullspace-comp feedback      # compare: no plate feedback
+```
+
+`--input` defaults to `spacemouse`, so pass it when no puck is connected. When the mode engages, the script prints
+`nullspace: input drives the wrist, the arm cancels it (plate)`.
+
+The default `plate` compensation also closes the loop on the top plate's measured pose (in the sim, the wrist's
+passive joints). The soft wrist sags under the gripper's weight by an amount that depends on its pose, so without
+this the gripper drifts by several millimetres as the wrist moves. `feedback` and `feedforward` leave that sag out;
+they're kept for comparison, and because a real wrist needs a plate pose sensor or model for `plate`. See
+[`scripts/nullspace/README.md`](scripts/nullspace/README.md).
+
+- **What moves.** The input drives the wrist, with wrist mode's speeds (`--wrist-pos-speed`, `--wrist-rot-speed`) and
+  limits (±10 mm in x and y, ±20 mm in z, ±10°). The arm moves the opposite way, so the gripper stays still in space.
+- **`r`** re-seeds the arm target on the arm, as in arm mode. It also re-anchors the held gripper pose at the place
+  where the gripper is now.
+- **`h`** sends the wrist home. The arm moves to keep the gripper where it is. This is the quickest way to see the
+  effect.
+- **`p`** prints the tcp and wrist poses. In nullspace mode the wrist pose changes and the arm's tcp moves the
+  opposite way, while the gripper stays where it is.
+- **fake_sine** pushes the wrist into its ±10 mm x/y limits and holds it there, so the motion stops at the corners
+  of the circle. This is expected.
+- **Watching it.** The motions are small (10–20 mm, 10°). Zoom the viewer in on the wrist and gripper, or it can look
+  as if nothing happens.
+
+The math, the implementation and the workspace evaluation are in
+[`scripts/nullspace/README.md`](scripts/nullspace/README.md).
+
+### Testing and evaluating nullspace mode
+
+There are two levels: unit tests (seconds), and a workspace evaluation (minutes) that measures where the mode works.
+Run both from `scripts/` with the venv active:
+
+```bash
+cd /Users/jamesavtges/robosuite_wrist/scripts && source ../robosuite_env/bin/activate
+
+python -m pytest nullspace/test_nullspace.py -q   # 9 tests, ~10 s
+
+python -m nullspace.evaluate --quick              # smoke test: 80 runs, ~2 min
+python -m nullspace.evaluate                      # full study: 544 runs, ~10 min on 10 cores -> nullspace/results/
+python -m nullspace.make_figures                  # -> nullspace/figures/*.png, nullspace/results/summary.md
+python -m nullspace.make_demo_gif                 # -> nullspace/figures/nullspace_demo.gif
+
+python -m nullspace.evaluate --no-gripper         # the same study with no gripper -> nullspace/results_nogripper/
+python -m nullspace.make_figures --no-gripper     # -> nullspace/figures_nogripper/, results_nogripper/summary.md
+```
+
+- **The unit tests** check:
+  - the frame algebra: the plate stays on the anchor, and feedback inverts feedforward;
+  - plate feedback learning a deflection, and its anti-windup;
+  - the plate model against MuJoCo;
+  - the mode cycle;
+  - a closed-loop run of each strategy through the real teleop.
+- **The evaluation** drives the real teleop loop with a simulated SpaceMouse.
+  - **Cases:** 120 grid points across the arm's workspace, 14 tool orientations at the workspace center, and the
+    center point at 20 Hz and 50 Hz.
+  - **Strategies:** each case runs with every one: none (wrist mode), feedforward, feedback, plate.
+  - **Each run:** pushes every wrist axis to its limits and back, and measures how far the top plate moves.
+
+  `results/summary.md` has the tables. `results/cases.csv` has every metric per case. The README explains the metrics
+  and the "usable" criterion. `--workers N` sets the number of parallel processes (default: CPU cores − 1).
+
+### Flange force readout
+
+The bottom-left corner of the viewer shows the wrench that the wrist and gripper apply to the Franka at its flange.
+`f` prints the same readout in the terminal every 0.5 s, and `p` prints it once.
+
+| Row | What it is |
+|---|---|
+| external force / moment | The total below, minus the static weight of the wrist and gripper: contact and inertial loads only. It reads 0 in free space and at rest. Pressing the gripper into the table gives a negative z force, a push into the flange. |
+| total force, with weight | Everything the wrist transmits to the arm, including its weight (about 10 N in free space) |
+| wrist leg stiffness | The six legs' current spring constants: the gains of MuJoCo's leg actuators. They fall from 100 kN/m (wrist contracted) to 300 N/m (extended) and scale with `x`. |
+| wrist deflection | Measured top-plate pose minus its command: how far the load pushes the wrist off its target |
+
+The readout uses the frame of the wrist's base body (the bottom plate), at the flange, with +z pointing from the
+flange toward the gripper. Values come from MuJoCo:
+- The total is MuJoCo's own interaction force between the wrist base body and the arm's hand body it's mounted on
+  (`cfrc_int` after `mj_rnePostConstraint`). It includes the legs' spring and damper forces, the contacts, gravity and
+  inertia.
+- The weight that is subtracted uses MuJoCo's subtree mass and center of mass.
+- `modern_robotics` moves both wrenches to the flange frame (`RpToTrans`, `Adjoint`; F_b = [Ad_T_ab]ᵀ F_a).
+
+`test_teleop.py::test_flange_force_matches_contact` checks the readout against MuJoCo's own numbers:
+- In free space, the total equals the subtree's weight and the external wrench is 0.
+- With the fingers pushed into the table, the external force equals the summed contact forces on the gripper, to
+  within 1 N.
+
+**Stiffness and force.** Springs in series all carry the same force. The wrist's stiffness changes the flange force
+only when the wrist takes a real share of an imposed motion, such as the arm pushing the gripper into the table. The
+force is then set by the series stiffness, 1 / (1/k_arm + 1/k_wrist). In a test pushing the arm's target 20 mm into
+the table:
+
+| Wrist, 15 mm from home | Leg k | Flange force | Wrist deflection | Arm tcp error |
+|---|---|---|---|---|
+| contracted | 50 kN/m | 101 N | 0.5 mm | 22 mm |
+| extended | 0.6 kN/m | 35 N | 9.9 mm | 11 mm |
+| contracted, `x` soft (0.3×) | 15 kN/m | 96 N | 1.5 mm | 20 mm |
+| extended, `x` soft (0.3×) | 0.2 kN/m | 10 N | 8.4 mm | 2.7 mm |
+
+The arm's operational-space controller acts like a spring of about 4–5 kN/m.
+- **Contracted**, the wrist is about 50× stiffer than the arm. The arm absorbs almost the whole push, and the force is
+  set by the arm.
+- **Extended**, the wrist is softer than the arm. It takes most of the push, and the flange sees much less force.
+  With `x` as well, it sees about 1/10 of the contracted force.
+
+(The extended rows' deflections include the gravity sag, which reverses as the table takes the gripper's weight.)
+
+To see it in the viewer:
+
+1. Start with `--floor-margin -0.03`. The negative floor margin lets the arm push the gripper up to 30 mm into the
+   table; by default the workspace box stops the arm just as the gripper touches it.
+2. In wrist mode, hold `o` to extend the wrist; `u` contracts it.
+3. In arm mode, move down to push the gripper into the table (press the puck down with its right button held, or
+   hold `o`), and read the external force. Repeat with the wrist contracted, and with `x`.
+
+The stiffness range is set by `leg_stiffness_contracted` and `leg_stiffness_extended` in `StewartPlatformConfig`
+(see "Changing the wrist").
 
 ### What's recorded
 
@@ -240,7 +390,8 @@ cd scripts && python -m pytest test_teleop.py -q
 - the hdf5 writer (save / drop / append)
 - a headless record → validate → replay run
 
-`python -m pytest nullspace/test_nullspace.py -q` runs the nullspace mode's 7 tests (see its README).
+`python -m pytest nullspace/test_nullspace.py -q` runs the nullspace mode's 9 tests. "Testing and evaluating
+nullspace mode" above covers them and the workspace evaluation.
 
 For an interactive check without the puck, run `--input fake_sine` or `--input keyboard` with the viewer and try every
 command key.
@@ -281,6 +432,99 @@ base frame).
   - `x` scaling the Stewart legs' stiffness, instead of switching HSA servo setpoints
 - The recording rate is the control rate (`--control-freq`, default 20 Hz, robosuite's usual), not a camera frame rate.
 
+### Running on Linux
+
+This was written on macOS and hasn't been run on Linux. The notes below come from the code and the packages'
+documented behavior.
+
+- **Use `python`, not `mjpython`.** Only macOS needs `mjpython`, because macOS requires windows to run on the main
+  thread. On Linux the viewer opens from plain `python`. The script checks for `mjpython` only on macOS.
+- **Install with `requirements.txt`.** It leaves out the macOS-only `pyobjc-*` packages and adds pynput's Linux
+  backends (see Setup).
+- **Display.** The viewer needs a desktop session with OpenGL. The scripts that only render offscreen can also run with
+  no display if you set `MUJOCO_GL=egl` (GPU) or `MUJOCO_GL=osmesa` (CPU). These are `make_teleop_gifs.py`,
+  `nullspace/make_demo_gif.py`, `nullspace/evaluate.py` and `nullspace/make_figures.py`.
+- **Keyboard motion.** `pynput` reads keys through X11. Under Wayland it usually doesn't see key presses sent to other
+  windows, so the motion keys may do nothing. Use an X11 session ("Ubuntu on Xorg" at login, for example). The command
+  keys (`m`, `c`, `s`, ...) are read from the terminal, so they work under either.
+- **SpaceMouse.** Reading the device needs access to `/dev/hidraw*`. Add a udev rule for 3Dconnexion devices (vendor
+  `256f`; older Logitech-era units use `046d`, so add a second line with that), then unplug and replug the puck:
+
+  ```bash
+  echo 'KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0666"' | sudo tee /etc/udev/rules.d/99-spacemouse.rules
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+  ```
+
+  If `spacenavd` is running, stop it. It can hold the device, as 3DxWare does on macOS.
+
+## Key insertion task (`KeyInsertion`)
+
+A top-down key-in-lock / RAM-stick-in-slot task. A rigid 10 g key sits on the wrist's top plate in place of the ALOHA
+gripper (gripper `StewartWristKey`), and the task is to push it down into a lock on the table. The keyhole fits the
+blade with 0.25 mm clearance per side and has a 2 mm chamfered entrance. A spring-loaded plunger at the bottom pushes
+back with 4 N at first touch, rising to 10 N when the key is seated, so seating takes a real push that the wrist carries.
+The lock's position and yaw are randomized on every reset. Full description, results and figures:
+[scripts/key_insertion/README.md](scripts/key_insertion/README.md).
+
+```python
+env = suite.make("KeyInsertion", robots="PandaStewartAloha")   # picks gripper_types="StewartWristKey" itself
+```
+
+The action is 12-dim: the arm's tcp pose (6) and the wrist's pose (6), with no grip. Success means the key is seated,
+i.e. the plunger is pushed down at least 90% of its 4 mm travel. Extra observations: `lock_pos` / `lock_quat`,
+`key_tip_to_lock_pos` / `_quat` (the key's tip in the keyhole frame), `plunger_depression`, and `flange_wrench` (the
+external wrench on the arm's flange, as in the teleop readout). The env's keyword arguments set the fit and the push:
+`clearance`, `chamfer`, `slot_depth`, `plunger_travel`, `seat_preload`, `seat_force`, `lock_friction`, the lock's
+randomization ranges, and `lock_alpha` (see-through lock walls for rendering).
+
+Watch the scripted expert (oracle), then change the wrist's stiffness or give it a perception error:
+
+```bash
+cd scripts
+mjpython -m key_insertion.oracle                              # home wrist, lock where the oracle thinks it is
+mjpython -m key_insertion.oracle --wrist stiff --dx 1 --dyaw 3   # contracted (stiff) wrist, keyhole 1 mm / 3 deg off
+mjpython -m key_insertion.oracle --wrist soft --dx 1 --dyaw 3    # extended (soft) wrist, same error
+mjpython -m key_insertion.oracle --wrist 0.5 --stiffness-scale 2 # any wrist z in [-1, 1], legs 2x stiffer
+mjpython -m key_insertion.oracle --k-extended 1000 --k-contracted 50000   # change the stiffness law itself
+python -m key_insertion.oracle --no-render --episodes 10      # headless, one summary line per episode
+```
+
+Use plain `python` instead of `mjpython` on Linux. Other flags: `--speed` (mm/s), `--max-force` (the oracle's force
+stop), `--retract`, `--clearance` / `--chamfer` (mm) / `--seat-force` (N), `--arm-kp`, `--fixed-lock`, `--slowdown`.
+The viewer shows the phase, the depth, the flange and key contact forces, the wrist's deflection and the leg stiffness.
+
+The oracle holds the wrist at one pose throughout and lowers the arm's target straight down. It doesn't use the force
+to steer, so whatever the chamfer has to correct is taken up by the wrist's compliance (and the arm's impedance). That
+makes it a direct probe of how stiffness affects the task.
+
+Teleop works too: `mjpython teleop_wrist.py --env KeyInsertion --input spacemouse`. Recorded demos keep the
+randomized lock pose in their `model_file`, so `validate_demos.py` replays them exactly.
+
+Study and figures:
+
+```bash
+cd scripts
+python -m pytest key_insertion/test_key_insertion.py -q   # env, key, oracle (7 tests, ~30 s)
+python -m key_insertion.evaluate         # ~800 oracle episodes over stiffness x perception error (~8 min; --quick ~3)
+python -m key_insertion.make_figures     # figures/force_profiles.png, success_maps.png, compliance_sweep.png
+python -m key_insertion.render_scene     # figures/scene.png, insertion.gif
+```
+
+### SERL version (`KeyInsertionWrist-v0`)
+
+A gym env of the same task for SERL: the lock fixed, a 40 N RAM-style snap latch, the arm on a diagonal 20 kN/m
+Cartesian impedance (`CARTESIAN_IMPEDANCE`), the key starting near the keyhole, and three wrist modes: stiff, soft,
+and variable (the wrist's z as an action). A scripted oracle supplies the demos. Design, numbers and commands:
+[scripts/key_insertion/README.md](scripts/key_insertion/README.md#serl-does-a-variable-stiffness-wrist-help). SERL
+needs its own Python 3.10 venv (`scripts/key_insertion/requirements_serl.txt`).
+
+```bash
+cd scripts
+python -m pytest key_insertion/test_serl_env.py -q           # controller, latch, env, oracle, timestep (11 tests, ~1 min)
+python -m key_insertion.collect_demos --mode all --n 20    # with the SERL venv's python
+bash key_insertion/launch_serl.sh variable 0               # SERL venv: learner + actor, logs in key_insertion/runs/
+```
+
 ## Validation and screenshots
 
 ```bash
@@ -301,7 +545,10 @@ The script produces:
 |---|---|
 | `models/wrists/wrist_model.py` | `WristModel` interface: MJCF string, mount body, actuators, observed joints, `format_action` |
 | `models/wrists/stewart_platform.py` | `StewartPlatformConfig` (geometry, workspace, dynamics) + `StewartPlatformWrist` (MJCF generator, closed-form IK) |
-| `models/grippers/wrist_gripper.py` | `WristGripperModel`: generic composition of any wrist with any robosuite gripper; `StewartAlohaGripper`, `StewartAlohaGripperLegControl`, `StewartAlohaGripperLockedWrist` |
+| `models/grippers/wrist_gripper.py` | `WristGripperModel`: generic composition of any wrist with any robosuite gripper, and the flange wrench (`flange_wrench`); `StewartAlohaGripper`, `StewartAlohaGripperLegControl`, `StewartAlohaGripperLockedWrist`, `StewartWristNoGripper`, `StewartWristKey` |
+| `models/grippers/key_tool.py` | `KeyConfig` + `KeyTool`: the rigid key (blade, bow, 10 g) as a 0-dof gripper |
+| `environments/manipulation/key_insertion.py` | `KeyInsertion`: the lock (chamfered slot, spring plunger or `latch_profile`), randomization, reward, observations, contact forces |
+| `controllers/parts/arm/cartesian_impedance.py` | `CartesianImpedanceController` (`CARTESIAN_IMPEDANCE`): diagonal Cartesian stiffness, damping critical given the arm's inertia; shares OSC's goal handling (`OperationalSpaceController.compute_errors`) |
 | `models/robots/compositional.py` | `PandaStewartAloha`: Panda arm, default gripper, init pose, eye-in-hand camera re-mount |
 | `robots/wrist_robot.py` | `WristFixedBaseRobot`: arm controller on the flange tcp, `tcp_pos` / `tcp_quat` observations, per-step leg gains, mocap sleeves |
 | `models/grippers/__init__.py`, `robots/__init__.py` | registration |
@@ -320,8 +567,8 @@ from robosuite.models.grippers import StewartAlohaGripper
 from robosuite.models.wrists import StewartPlatformConfig
 
 StewartAlohaGripper.wrist_config = StewartPlatformConfig(
-    actuator_kp=3e4,      # leg stiffness at home length, N/m (default 1e5)
-    # leg_stiffness_exponent=0,  # constant stiffness (default 1: k = EA/L)
+    leg_stiffness_contracted=1e5,  # N/m per leg, wrist fully contracted (default 1e5)
+    leg_stiffness_extended=300.0,  # N/m per leg, wrist fully extended (default 300)
     # leg_stroke=0.025,   # fixed leg travel (default: just enough for the whole workspace box)
     # z_range=0.015, tilt_range=8.0, ...
 )
@@ -330,26 +577,52 @@ env = suite.make("Lift", robots="PandaStewartAloha")
 
 You can also edit the defaults in `models/wrists/stewart_platform.py`.
 
-- Length-dependent leg stiffness (on by default): each leg's stiffness is
-  `k = actuator_kp * (L_home / L) ** leg_stiffness_exponent`, where L is the leg's *commanded* (unloaded) length.
-  The default exponent 1 is an elastic member, k = EA/L: shorter legs are stiffer. 0 gives the old constant
-  stiffness. Leg damping scales with sqrt(k), so each leg's damping ratio stays the same. The gains are set on the
-  live model before every sim step (`WristFixedBaseRobot` → `WristGripperModel.update_actuator_gains`
-  → `StewartPlatformWrist.actuator_gains`). Over the default workspace box, k ranges from 0.70× to 1.67× of
-  `actuator_kp` (exponent 1), which stays under the ~2e5 N/m stability limit for the default armature. With a larger
-  exponent or `actuator_kp`, keep `actuator_kp * max ratio` under that limit, or raise `leg_armature`.
-- 6D stiffness: `wrist.platform_stiffness(pose)` returns the 6×6 K = Jᵀ diag(k) J in the pose coordinates
+- **Length-dependent leg stiffness.** The defaults follow the real wrist: very soft when extended, about as stiff as
+  a rigid mount when contracted. Each leg's stiffness depends on its *commanded* (unloaded) length L:
+  - `leg_stiffness_contracted` (100 kN/m) at the wrist's fully contracted pose (z = −`z_range`, every leg at its
+    shortest);
+  - `leg_stiffness_extended` (300 N/m) at the fully extended pose (z = +`z_range`);
+  - log-linear in L in between (about 6 kN/m at home), and clamped to that range beyond it, e.g. when tilted.
+
+  Set both equal for constant stiffness. The gains are set on the live model before every sim step
+  (`WristFixedBaseRobot` → `WristGripperModel.update_actuator_gains` → `StewartPlatformWrist.actuator_gains`).
+
+  | Wrist pose | Leg k | Wrist, axial (K_zz) | Wrist, lateral (K_xx) | Wrist, tilt (K_roll) |
+  |---|---|---|---|---|
+  | fully contracted (z −20 mm) | 100 kN/m | 400 kN/m | 100 kN/m | 417 N·m/rad |
+  | home | 6.0 kN/m | 28 kN/m | 3.9 kN/m | 29 N·m/rad |
+  | fully extended (z +20 mm) | 300 N/m | 1.5 kN/m | 140 N/m | 1.6 N·m/rad |
+
+- **Damping and armature follow the stiffness.** `leg_damping` and `leg_armature` are the values for the stiffest
+  leg:
+  - Leg damping scales with √k.
+  - The leg armature (an artificial reflected inertia that keeps the stiff legs stable at the 2 ms timestep) scales
+    with k. Every leg's natural frequency therefore stays at its stiff-end value, and the soft wrist isn't slowed by
+    inertia it doesn't have.
+  - The top plate's passive-joint damping (`top_lin_damping`, `top_rot_damping`) scales with √(mean leg k).
+
+  With the defaults, a wrist step doesn't overshoot and settles within 2% in 0.03–0.7 s, slowest when the wrist is
+  extended. Above about 2e5 N/m for `leg_stiffness_contracted`, raise `leg_armature` proportionally, because the leg
+  springs are integrated explicitly.
+- **Gravity sag.** The soft wrist sags visibly under the gripper's 0.59 kg. As on the real wrist, the top plate
+  (`top_mass`, 10 g) adds almost nothing; the strut rods add 60 g, partly carried by the plate. Pointing down, the
+  wrist sags about 0.4 mm at home and 2–3 mm when 15 mm extended. With `x` (0.3×), that becomes 1.0 mm and 7 mm. The commanded wrist pose is where the
+  plate would be with no load. `p` and the flange-force readout show the measured pose and the deflection.
+- **6D stiffness.** `wrist.platform_stiffness(pose)` returns the 6×6 K = Jᵀ diag(k) J in the pose coordinates
   (x, y, z, roll, pitch, yaw), with the legs commanded to `pose`. Get the wrist from
-  `env.robots[0].gripper["right"].wrist`; the last commanded pose is `wrist.last_commanded_pose`. A fixed-base test
-  that applies forces and torques to the top plate matches K⁻¹ to within 1% on all 6 axes, at home, at the z limits
-  and at a workspace corner, for exponents 1 and 2. For that match, `eq_solimp` is now (0.9999, 0.99999, 0.001). The
-  old (0.99, 0.999, 0.001) let the ball joints add compliance in series, so the wrist was about 33% softer than its
-  legs.
-- Leg stiffness: I tested `actuator_kp` from 1e4 to 5e5 N/m with random arm and wrist actions, and it was stable
-  throughout. Lower values make the wrist sag more under the gripper's weight. Above about 2e5, raise
-  `leg_armature` proportionally, because the leg actuators are integrated explicitly at the 2 ms timestep.
-- Runtime stiffness: `wrist.stiffness_scale` (default 1.0) multiplies every leg's stiffness, with damping following
-  √k. The teleop's `x` key toggles it. It isn't part of the sim state.
+  `env.robots[0].gripper["right"].wrist`; the last commanded pose is `wrist.last_commanded_pose`.
+  - **Check without gravity:** in the full robot with gravity off, applying ± forces and torques to the top plate
+    matches K⁻¹ to within 0.2% on all 6 axes. That holds at the z limits, at home and at a tilted corner, and with
+    `x` on or off. This needs `eq_solimp` = (0.9999, 0.99999, 0.001). The old (0.99, 0.999, 0.001) let the ball
+    joints add compliance in series, so the wrist was about 33% softer than its legs.
+  - **With gravity:** the gripper's weight preloads the struts, which adds a geometric stiffness term that K leaves
+    out. At home the measured stiffness differs from K by up to about 20%; extended, by 10–70%, the most with `x`. That
+    is real mechanics of a loaded soft wrist, simulated by MuJoCo, not a numerical error.
+- **Stability.** A random stress test showed no NaNs, no MuJoCo warnings, no leg reaching its stroke limit, and at
+  most 1.1 mm of loop-closure stretch. It ran 3 seeds × 4 episodes of random arm jumps, full-range wrist steps, `x`,
+  gripper and mode toggles.
+- **Runtime stiffness.** `wrist.stiffness_scale` (default 1.0) multiplies every leg's stiffness, and damping and
+  armature follow it. The teleop's `x` key toggles it. It isn't part of the sim state.
 - To write a completely new wrist, make a `WristModel` subclass and pass it to
   `WristGripperModel(wrist=..., gripper=...)`. Nothing outside the wrist file needs to know how it works inside.
 

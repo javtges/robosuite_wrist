@@ -415,51 +415,12 @@ class OperationalSpaceController(Controller):
         # Update state
         self.update()
 
-        desired_world_pos = None
-        # Only linear interpolator is currently supported
-        if self.interpolator_pos is not None:
-            # Linear case
-            if self.interpolator_pos.order == 1:
-                desired_world_pos = self.interpolator_pos.get_interpolated_goal()
-            else:
-                # Nonlinear case not currently supported
-                pass
-        else:
-            if self.input_ref_frame == "base":
-                # compute goal based on current base position and orientation
-                desired_world_pos = self.origin_pos + np.dot(self.origin_ori, self.goal_pos)
-            elif self.input_ref_frame == "world":
-                desired_world_pos = self.goal_pos
-            else:
-                raise ValueError
-
-        if self.interpolator_ori is not None:
-            # relative orientation based on difference between current ori and ref
-            self.relative_ori = orientation_error(self.ref_ori_mat, self.ori_ref)
-
-            ori_error = self.interpolator_ori.get_interpolated_goal()
-        else:
-            if self.input_ref_frame == "base":
-                # compute goal based on current base orientation
-                desired_world_ori = np.dot(self.origin_ori, self.goal_ori)
-            elif self.input_ref_frame == "world":
-                desired_world_ori = self.goal_ori
-            else:
-                raise ValueError
-            ori_error = orientation_error(desired_world_ori, self.ref_ori_mat)
-
-        # Compute desired force and torque based on errors
-        position_error = desired_world_pos - self.ref_pos
-        base_pos_vel = np.array(self.sim.data.get_site_xvelp(f"{self.naming_prefix}{self.part_name}_center"))
-        vel_pos_error = -(self.ref_pos_vel - base_pos_vel)
+        position_error, vel_pos_error, ori_error, vel_ori_error = self.compute_errors()
 
         # F_r = kp * pos_err + kd * vel_err
         desired_force = np.multiply(np.array(position_error), np.array(self.kp[0:3])) + np.multiply(
             vel_pos_error, self.kd[0:3]
         )
-
-        base_ori_vel = np.array(self.sim.data.get_site_xvelr(f"{self.naming_prefix}{self.part_name}_center"))
-        vel_ori_error = -(self.ref_ori_vel - base_ori_vel)
 
         # Tau_r = kp * ori_err + kd * vel_err
         desired_torque = np.multiply(np.array(ori_error), np.array(self.kp[3:6])) + np.multiply(
@@ -493,6 +454,55 @@ class OperationalSpaceController(Controller):
         super().run_controller()
 
         return self.torques
+
+    def compute_errors(self):
+        """
+        Pose and velocity errors of the reference site against the (interpolated) goal, in the world frame.
+
+        Returns:
+            4-tuple: position error, linear velocity error, orientation error (axis-angle), angular velocity error
+        """
+        desired_world_pos = None
+        # Only linear interpolator is currently supported
+        if self.interpolator_pos is not None:
+            # Linear case
+            if self.interpolator_pos.order == 1:
+                desired_world_pos = self.interpolator_pos.get_interpolated_goal()
+            else:
+                # Nonlinear case not currently supported
+                pass
+        else:
+            if self.input_ref_frame == "base":
+                # compute goal based on current base position and orientation
+                desired_world_pos = self.origin_pos + np.dot(self.origin_ori, self.goal_pos)
+            elif self.input_ref_frame == "world":
+                desired_world_pos = self.goal_pos
+            else:
+                raise ValueError
+
+        if self.interpolator_ori is not None:
+            # relative orientation based on difference between current ori and ref
+            self.relative_ori = orientation_error(self.ref_ori_mat, self.ori_ref)
+
+            ori_error = self.interpolator_ori.get_interpolated_goal()
+        else:
+            if self.input_ref_frame == "base":
+                # compute goal based on current base orientation
+                desired_world_ori = np.dot(self.origin_ori, self.goal_ori)
+            elif self.input_ref_frame == "world":
+                desired_world_ori = self.goal_ori
+            else:
+                raise ValueError
+            ori_error = orientation_error(desired_world_ori, self.ref_ori_mat)
+
+        position_error = desired_world_pos - self.ref_pos
+        base_pos_vel = np.array(self.sim.data.get_site_xvelp(f"{self.naming_prefix}{self.part_name}_center"))
+        vel_pos_error = -(self.ref_pos_vel - base_pos_vel)
+
+        base_ori_vel = np.array(self.sim.data.get_site_xvelr(f"{self.naming_prefix}{self.part_name}_center"))
+        vel_ori_error = -(self.ref_ori_vel - base_ori_vel)
+
+        return position_error, vel_pos_error, ori_error, vel_ori_error
 
     def update_origin(self, origin_pos, origin_ori):
         """

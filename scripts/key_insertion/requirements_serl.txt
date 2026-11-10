@@ -1,0 +1,45 @@
+# The SERL venv (Python 3.10): SERL (rail-berkeley/serl, commit 1fa2af7) + this repo's robosuite. Tested 2026-11-06 on
+# macOS arm64 (CPU JAX). SERL pins JAX 0.4.35; newer JAX removed jax.tree_map, which serl_launcher still uses.
+# Run from the repo root (so -e ./robosuite resolves to the vendored copy), with SERL cloned next to it:
+#   git clone https://github.com/rail-berkeley/serl.git ../serl && git -C ../serl checkout 1fa2af7
+#   uv venv serl_env --python 3.10
+#   uv pip install --python serl_env/bin/python -r scripts/key_insertion/requirements_serl.txt
+# On a CUDA 12 server, replace the jax line with: jax[cuda12_pip]==0.4.35 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+#
+# SERL's example script async_sac_state_sim.py reads a flag it never defines (FLAGS.utd_ratio); our train_serl.py doesn't
+# use that script, so nothing needs patching.
+jax[cpu]==0.4.35
+jaxlib==0.4.35
+flax==0.10.2
+optax==0.2.4
+chex==0.1.88
+orbax-checkpoint==0.10.3
+distrax==0.1.5
+tensorflow==2.21.0
+tensorflow-probability==0.25.0
+tf-keras==2.21.0
+ml-collections==1.1.0
+absl-py==2.5.1
+wandb==0.31.0
+einops==0.8.2
+imageio==2.38.0
+tqdm==4.70.1
+pyzmq==27.3.0
+lz4==4.4.5
+opencv-python==4.11.0.86
+agentlace @ git+https://github.com/youliangtan/agentlace.git@cf2c337c5e3694cdbfc14831b239bd657bc4894d
+-e ../serl/serl_launcher
+# Simulation (gym 0.26 is what SERL's code imports; gymnasium 0.29 for robosuite)
+gym==0.26.2
+gymnasium==0.29.1
+mujoco==3.9.0
+numpy==1.26.4
+scipy==1.11.4
+modern-robotics==1.1.1
+numba==0.68.1
+qpsolvers==4.13.0
+quadprog==0.1.13
+termcolor==3.3.0
+h5py==3.14.0
+pillow==11.3.0
+-e ./robosuite

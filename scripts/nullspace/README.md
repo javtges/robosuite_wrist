@@ -8,8 +8,8 @@ to change the arm's posture while holding a grasp, or to test how the wrist alon
 ![nullspace demo](figures/nullspace_demo.gif)
 
 *The same puck input twice: in wrist mode (first half) the gripper moves with the wrist. In nullspace mode (second
-half) the arm cancels the wrist, and the gripper stays within about 1 mm / 1° while moving and about 0.1 mm once the
-puck is released. The right-hand view is fixed in the world.*
+half) the arm cancels the wrist (default `plate` compensation), and the gripper stays within about 1 mm / 1° while
+moving and ends 0.05 mm from where it started. The right-hand view is fixed in the world.*
 
 - [Using it](#using-it)
 - [Is it possible? Redundancy](#is-it-possible-redundancy)
@@ -25,7 +25,8 @@ puck is released. The right-hand view is fixed in the world.*
 
 ```bash
 cd scripts
-mjpython teleop_wrist.py --env Lift --input spacemouse                                # feedback (default)
+mjpython teleop_wrist.py --env Lift --input spacemouse                                # plate feedback (default)
+mjpython teleop_wrist.py --env Lift --input spacemouse --nullspace-comp feedback
 mjpython teleop_wrist.py --env Lift --input spacemouse --nullspace-comp feedforward
 ```
 
@@ -58,8 +59,10 @@ n − 6 = **7 internal motions** that leave the gripper still:
   [2, Eq. (55)], described below.
 
 This is the **macro/mini** structure of Khatib et al. [3]: "a 'macro' mechanism with coarse, slow, dynamic responses
-… and a relatively fast and accurate 'mini' device". The Panda is the macro structure, and the wrist (whose stiff
-legs settle in about 0.1 s) is the mini device. As in [3], "the idea … is to treat them as a single redundant
+… and a relatively fast and accurate 'mini' device". The Panda is the macro structure, and the wrist is the mini device.
+It is fast but no longer uniformly accurate: like the real wrist, its struts range from 100 kN/m (contracted) to
+300 N/m (extended), so it sags under the gripper's weight by an amount that depends on its pose (see
+[Plate feedback](#plate-feedback-the-mini-devices-own-deflection)). As in [3], "the idea … is to treat them as a single redundant
 system". Moving the wrist while holding the gripper still is an internal motion of that combined system.
 
 Whether this works in practice depends on whether the arm can produce the compensating flange motion: up to ±20 mm
@@ -217,7 +220,8 @@ and the macro structure absorbs the motion.
 Feedforward is exact only in steady state. The two structures respond at different speeds, which is what [3] means
 by "coarse, slow" versus "fast and accurate":
 
-- **The wrist** (stiff position-controlled legs) reaches a step command in about 0.1 s.
+- **The wrist** (position-controlled legs) reaches a step command in 0.03–0.7 s: fastest contracted (stiff), slowest
+  extended (soft). Under load it stops short of the command (next sections).
 - **The arm** (OSC, kp = 150, critically damped) takes about 0.3 s for small moves and longer for big ones. It also
   stops about 0.4 mm short, held by the Panda's joint friction (0.1 N·m per joint).
 
@@ -225,7 +229,7 @@ While the arm lags, its tracking error $E = (T_{bt}^*)^{-1}\,T_{bt}$ passes stra
 
 $$ T_{bp} = T_{bp}^0\;T_{wp}(\chi^*)^{-1}\,T_{tw}^{-1}\;E\;T_{tw}\,T_{wp}(\chi^*) $$
 
-That is the 7 mm / 4° peak in the feedforward results.
+That is most of the ~10 mm / 3.5° median peak in the feedforward results; the rest is the wrist's deflection (below).
 
 ### Feedback: the mini device cancels the macro structure's lag
 
@@ -240,7 +244,8 @@ rotation give $(\alpha,\beta,\gamma)$. The arm still gets the feedforward target
 $\hat T_{bt}\to T^*_{bt}(\chi^*)$ and $\chi_{fb}\to\chi^*$, so the wrist ends where the operator put it
 (`test_feedback_inverts_feedforward`).
 
-The plate error is now set by the wrist's tracking and the 50 ms command update, not by the arm. Feedback also
+The plate error is now set by the wrist's tracking and the 50 ms command update, not by the arm. On the soft wrist,
+the wrist's tracking includes its deflection under load, which feedback can't see; plate feedback (below) handles it. Feedback also
 cancels the arm's friction-limited steady-state error, which feedforward can't. This is the benefit [3] attributes to
 macro/mini systems: "the dynamic performance of a combined macro/mini system can be made comparable to … that of the
 lightweight mini manipulator". The same architecture, a small fast manipulator carried by a large slow one, is the
@@ -260,12 +265,51 @@ can't absorb an arm error that would push it further. The plate then shows that 
 the "settled" errors below are measured *at* the wrist limits, the worst case. This is [3]'s motivation for keeping
 the mini device near mid-range.
 
+### Plate feedback: the mini device's own deflection
+
+Both boxed equations assume the wrist *reaches* its command, $T_{wp}(\hat\chi) = T_{wp}(\chi_{cmd})$. A soft,
+position-controlled wrist doesn't. Under a load wrench $\mathcal F$ (the gripper's weight, a contact), it stops short by
+its deflection,
+
+$$ \hat\chi \;\approx\; \chi_{cmd} - K(\chi_{cmd})^{-1}\,\mathcal F, \qquad K = J^T \mathrm{diag}(k)\,J $$
+
+where $K$ is the wrist's 6×6 stiffness (`StewartPlatformWrist.platform_stiffness`; it leaves out a geometric term from
+the struts' preload, which matters on the soft wrist). Its struts go from 100 kN/m contracted to 300 N/m extended.
+The gripper's weight then deflects the plate by about 0.4 mm at home but 2–3 mm when 15 mm extended. As the operator
+moves the wrist, $K$ changes and so does the deflection. In nullspace mode the plate moves by that *change*, which the
+feedforward and feedback equations can't see: they only measure the arm.
+
+The **plate** strategy (`--nullspace-comp plate`, the default) also measures the plate. In the sim this is the
+wrist's six passive joints, which are exactly the χ coordinates. It adds an integral correction $c$ to the feedback
+command, so that the *measured* plate pose, not the commanded one, converges to $\chi_{fb}$:
+
+$$
+c \leftarrow c + r\,\Delta t\,(\chi_{fb} - \hat\chi), \qquad
+\chi_{cmd} = \mathrm{clip}(\chi_{fb} + c,\ \pm\text{wrist limits}), \qquad
+c \leftarrow \chi_{cmd} - \chi_{fb}
+$$
+
+(`NullspaceCompensator.plate_command`; $r$ = `PLATE_RATE` = 10 s⁻¹).
+
+- **Steady state:** $\hat\chi = \chi_{fb}$ exactly, whatever the load and stiffness. The integrator learns the
+  deflection, so neither a model of $K$ nor of the load is needed.
+- **Anti-windup:** the last assignment stops the integrator where the command clips. The correction never grows past
+  what the wrist can be sent.
+- **No jump when the mode engages:** the anchor is the *measured* plate pose (with the measured tcp), and $c$ starts
+  at the current deflection $\chi_{cmd} - \hat\chi$. The operator's wrist target χ\* becomes the measured pose.
+- **Stability:** the loop closes only around the wrist: plate pose → wrist command. With the wrist settling in
+  0.03–0.7 s, $r = 10$ s⁻¹ gives a ~0.1 s correction on top of it, well inside the stable range at 20 Hz and 50 Hz.
+  The arm's target still depends only on χ\* and the anchor.
+- **On hardware**, this needs a measured plate pose at the control rate: a motion-capture marker on the top plate, an
+  IMU-plus-model estimate, or a learned forward model from actuator positions to plate pose. Without one, use
+  `feedback`, which needs only the arm's joint encoders.
+
 ## Implementation
 
 | File | What |
 |---|---|
 | `nullspace/controller.py` | `NullspaceCompensator`: the frame algebra above. `anchor()`, `arm_target()` (feedforward), `wrist_command()` (feedback), plus the 4×4 helpers. No robosuite dependency except `from_sim()`. |
-| `teleop_wrist.py` | Mode `NULLSPACE = 2` in the cycle, `anchor_nullspace()`, the per-tick block in `tick()`, and `--nullspace-comp {feedback,feedforward}` |
+| `teleop_wrist.py` | Mode `NULLSPACE = 2` in the cycle, `anchor_nullspace()`, the per-tick block in `tick()`, and `--nullspace-comp {feedforward,feedback,plate}` |
 | `nullspace/test_nullspace.py` | Identities (the plate stays on the anchor for any wrist pose, feedback inverts feedforward and cancels small arm errors, clipping), the plate model against the sim, the mode cycle, and a closed-loop test for both strategies |
 | `nullspace/evaluate.py` | The workspace study (below) |
 | `nullspace/make_figures.py` | Figures and `results/summary.md` |
@@ -277,10 +321,12 @@ Per tick in nullspace mode (`Teleop.tick`):
    velocities, button modes, wrist limits).
 2. Arm target $T_{bt}^*$ = `arm_target(χ*)`, clipped to the teleop workspace box.
 3. If the arm is more than 15 cm from its target, re-seed and re-anchor, as in arm mode.
-4. Wrist command: χ_fb = `wrist_command(measured tcp)` (feedback) or χ\* (feedforward).
+4. Wrist command: χ_fb = `wrist_command(measured tcp)` (feedback); then `plate_command(χ_fb, measured plate pose)`
+   (plate, the default); or χ\* (feedforward).
 5. Send [$T_{bt}^*$ as pos + rotvec, wrist command (normalized), gripper] to the env.
 
-Leaving nullspace mode (to arm mode) keeps the arm target and the wrist target where they are.
+Leaving nullspace mode (to arm mode) keeps the arm target where it is. The wrist target becomes the last wrist
+command, so the wrist doesn't jump.
 
 ## How it was evaluated
 
@@ -292,7 +338,7 @@ through HSA's axis map and button logic, as with the real device; nothing is cal
    2 mm / 1° from the pose, the pose is marked **unreachable**: the arm itself can't get there with the gripper in that
    orientation (joint limits).
 3. Switches mode: **none** = wrist mode (the arm holds still: the baseline, showing what the wrist alone does to the
-   gripper), **feedforward** or **feedback** = nullspace mode.
+   gripper), **feedforward**, **feedback** or **plate** = nullspace mode.
 4. Runs the excursion. For each wrist axis x, y, z, roll, pitch, yaw, along the robot-frame direction an operator
    would push:
    - push **past the +limit** (1.5× the time it takes to reach it), so the wrist saturates at its limit, or at a corner
@@ -333,7 +379,8 @@ Peak (transient) error is reported but not part of the criterion.
   y axes, and ±45°, ±90°, ±135° about z.
 - **Control rate:** the center point at 20 Hz (robosuite's default, what the teleop uses) and 50 Hz.
 
-Every case runs once per strategy: 408 runs in total.
+Every case runs once per strategy: 544 runs in total. The wrist has the real wrist's stiffness range (struts
+100 kN/m contracted to 300 N/m extended) and a negligible top-plate mass, so the gripper's weight deflects it.
 
 ## Results
 
@@ -341,36 +388,41 @@ Full numbers: [`results/summary.md`](results/summary.md). Raw per-case data: [`r
 
 ### Headline
 
-| | no compensation (wrist mode) | nullspace, feedforward | **nullspace, feedback** (default) |
-|---|---|---|---|
-| usable workspace (of the reachable grid points) | 0 % | 0 % | **72 %** (68 of 94) |
-| settled plate error, median | 20.7 mm / 10.2° | 2.0 mm / 0.31° | **0.49 mm / 0.04°** |
-| peak (transient) plate error, median | 20.7 mm / 10.3° | 9.6 mm / 4.2° | **2.2 mm / 1.2°** |
-| back at start, workspace center | (the gripper simply moved) | 0.75 mm | **0.04 mm** |
+| | no compensation (wrist mode) | nullspace, feedforward | nullspace, feedback | **nullspace, plate** (default) |
+|---|---|---|---|---|
+| usable workspace (of the reachable grid points) | 0 % | 0 % | 0 % | **64 %** (63 of 99) |
+| settled plate error, median | 24.8 mm / 10.5° | 5.3 mm / 2.6° | 4.8 mm / 2.6° | **0.56 mm / 0.08°** |
+| peak (transient) plate error, median | 24.8 mm / 10.5° | 10.1 mm / 3.5° | 6.7 mm / 2.8° | **2.7 mm / 1.4°** |
+| back at start, workspace center | (the gripper simply moved) | 1.1 mm | 0.07 mm | **0.007 mm** |
 
-Without compensation the gripper moves by the wrist's full range, as expected. Feedforward cuts that by about 10×
-once settled, but it can't remove the arm's own steady-state error, so it never gets back within 0.5 mm of where it
-started. **Feedback holds the gripper to about half a millimetre in most of the workspace, and returns it to within
-hundredths of a millimetre.** The transient is about 2 mm / 1° during a full-speed wrist move, and the gripper always
-comes back.
+Without compensation the gripper moves by the wrist's full range, as expected. **Feedforward and feedback no longer
+work with the soft wrist.** They assume the wrist reaches its command. The gripper's weight deflects it by an amount
+that changes with the wrist pose: about 0.4 mm at home, but 2–3 mm when extended, where the struts are softest. That
+change goes straight to the gripper, about 5 mm / 2.6° when settled. Both return to the start when the wrist goes
+home (feedback to 0.07 mm), because the deflection is the same there.
+
+**Plate feedback measures the plate and removes the deflection.** It holds the gripper to about half a millimetre and
+0.1° in most of the workspace, with a ~2.7 mm / 1.4° transient during a full-speed wrist move. It returns to within
+0.01 mm at the workspace center.
 
 ### One run, second by second
 
 ![time series](figures/timeseries_center.png)
 
 *At the workspace center, at 20 Hz:*
-- *Top: the operator saturates each wrist axis in turn.*
-- *Second: the arm's tcp moves the opposite way in both nullspace modes (up to 20 mm for z) and holds still in wrist
-  mode.*
-- *Bottom two (log scale): the plate's error. Wrist mode (gray) moves the full range. Feedforward (orange) spikes to
-  6–8 mm / 3–4° while the arm catches up, then sits at 0.2–1 mm. Feedback (blue) spikes to about 2 mm / 1° and decays
-  to 0.001–0.5 mm. The remaining ~0.5 mm appears only while the wrist is pinned at a limit; see Limitations.*
+- *Top: the operator saturates each wrist axis in turn. z reaches 118% of its range: the extended wrist's sag adds
+  to the command, which the wrist-mode baseline shows as measured.*
+- *Second: the arm's tcp moves the opposite way in all three nullspace modes (up to 20 mm for z) and holds still in
+  wrist mode.*
+- *Bottom two (log scale): the plate's error. Wrist mode (gray) moves the full range. Feedforward (orange) and
+  feedback (blue) settle at 0.2–5 mm and up to ~3°: the deflection change, worst for z (the wrist extends and softens)
+  and the tilts (gravity loads it sideways). Plate feedback (purple) decays to 0.001–0.5 mm between moves.*
 
 ![x excursion](figures/transient_x_excursion.png)
 
-*Zoom on the x excursion, at 20 Hz and 50 Hz. Feedforward's transient is the arm's lag, so a faster loop doesn't help
-it. Feedback's transient is mostly the one-tick delay before the wrist hears about the arm's error, so 50 Hz halves it
-(2.2 → 1.1 mm).*
+*Zoom on the x excursion, at 20 Hz and 50 Hz. Feedback's transient is mostly the one-tick delay before the wrist
+hears about the arm's error, so 50 Hz cuts it (2.9 → 2.2 mm). Plate feedback's x transient is 1.2 mm at either rate:
+it's set by the soft wrist's own response (up to 0.7 s), not the loop rate.*
 
 ### Across the workspace
 
@@ -388,46 +440,78 @@ The orientation-error and peak-error maps have the same layout:
 
 ![workspace 3d](figures/workspace_3d.png)
 
-*The same classification in 3D. Feedback is usable through the middle of the workspace:*
-- *at z = 0.22 m, nearly everything from x = 0.30 to 0.66 m;*
-- *at 0.36 m, x = 0.30–0.57 m;*
+*The same classification in 3D. Plate feedback is usable through the middle of the workspace:*
+- *at z = 0.22 m and 0.36 m, nearly everything from x = 0.30 to 0.66 m;*
 - *at 0.50 m, x = 0.30–0.48 m;*
 - *at the lowest layer (0.08 m), x = 0.57–0.66 m, plus the outer columns (|y| = 0.35 m) closer in.*
 
-**Where feedback fails, and why** (26 reachable points, sometimes for several reasons):
+*Feedforward and feedback are usable nowhere.*
+
+**Where plate feedback fails, and why** (36 reachable points, sometimes for several reasons):
 
 | Region | What happens | Why |
 |---|---|---|
-| **Far reach**, x = 0.75 m (and x = 0.66 m at z = 0.50 m) | Settled errors up to 8 mm. The wrist doesn't reach its full range. | The arm is at or near its joint limits. 8 of the 26 failures touched a joint limit during the excursion. The arm can't move the flange the extra 10–20 mm the wrist needs. |
-| **Low and close**, z = 0.08 m, x ≤ 0.48 m, \|y\| ≤ 0.175 m | Transient peaks of 10–60 mm during the pitch and roll excursions, settling to 1.2–19 mm | The elbow is nearly fully folded (joint 4 ≈ −146°), and the arm Jacobian's smallest singular value falls from 0.17 to 0.07: nearly singular. OSC loses its own target by up to 40 mm for a moment. No contact or torque saturation was involved. |
-| A few edge points at 0.55–0.61 mm settled | Just over the 0.5 / 1.0 thresholds | The wrist is pinned at a limit, so the arm's ~0.5 mm friction-limited static error shows through. |
+| **Far reach**, x = 0.75 m (and x = 0.57–0.66 m high up) | Settled errors of 1.2–13 mm | The arm is at its joint limits: 12 of the 36 failures touched one during the excursion. The arm can't move the flange the extra 10–20 mm the wrist needs. |
+| **Low and close**, z = 0.08 m, x ≤ 0.48 m, \|y\| ≤ 0.175 m | Transient peaks of 17–62 mm during the pitch and roll excursions, settling to 2.5–31 mm | The elbow is nearly fully folded, and the arm Jacobian is nearly singular. OSC loses its own target for a moment. No contact or torque saturation was involved. |
+| **The wrist doesn't reach its full range** (13 points, mostly high or far) | The gripper is held (settled ≤ 0.8 mm, back at start ≤ 0.3 mm), but at the end of a hold some wrist axis sits at only 89–95% of its range, usually roll | Tilting the wrist 10° makes the arm swing the flange around the plate. At these poses the arm is still 1–2 mm behind its target at the end of the 1.5 s hold, and feedback backs the wrist off to keep the gripper still. It isn't the gripper's weight: the same points fail the same way with no gripper (below). These points fail only the 95% wrist-range criterion, and they sit close to it: reruns of one point gave 90–96%. |
+| A few edge points | Settled rotation 0.5–2.2° | Gravity loads the soft, tilted wrist sideways at the limit, beyond what the clipped command can correct |
 
 When the arm can't follow, feedback keeps the **gripper** on the anchor by *not* moving the wrist as far as the
-operator asked. The command is clipped to wherever the arm actually is. That is why "wrist range reached" fails at
-those points: the gripper stays protected, but the operator's wrist motion isn't fully executed there.
+operator asked. The command is clipped to wherever the arm actually is. That is also why "wrist range reached" fails
+at the joint-limit points.
 
 ![cdf](figures/error_cdf.png)
 
-*Cumulative distributions over the reachable grid. 85% of points settle within 1 mm with feedback, against 11% with
-feedforward. 93% stay within 0.5° with feedback, against 67% with feedforward. Feedback's peak is under 3 mm at 81%
-of points; feedforward's never is.*
+*Cumulative distributions over the reachable grid. With plate feedback, 80% of points settle within 1 mm and 85%
+within 0.5°; with feedback or feedforward, none do. Plate feedback's peak is under 3 mm at 69% of points.*
 
 ### Tool orientation
 
 ![orientation](figures/orientation_study.png)
 
-*At the workspace center, the tool tilted about each robot axis. Feedback is usable at x ±20° and ±40°, y +20°, and z
-±45°, ±90° and +135°: 10 of 14. At y −20° and −40° (the tool tilted back toward the base) the arm runs into a joint
-limit compensating the wrist (its margin reaches 0), so the gripper moves 13–30 mm. At y +40° and z −135° the arm can't reach
-the pose at all (—).*
+*At the workspace center, the tool tilted about each robot axis. Plate feedback is usable with the tool rotated
+about z: −90°, −45°, +45°, +90° and +135°, 5 of 14. Tilting the tool about x or y loads the soft wrist sideways with
+the gripper's weight. Extended, its lateral stiffness is only ~140 N/m, so the plate sags further than the clipped
+command can correct: 0.8–1.6 mm at ±20°, 5–9 mm at ±40°. At y −40° and −20° (the tool tilted back toward the base) the
+arm also runs into a joint limit. At z −135° the arm can't reach the pose at all (—). Feedforward and feedback settle
+at 4–48 mm everywhere.*
 
 ### Control rate
 
 ![control rate](figures/control_rate.png)
 
-*The workspace center at 20 Hz and 50 Hz. Feedback improves at 50 Hz: peak 2.2 → 1.1 mm, back at start 0.036 →
-0.009 mm. Feedforward doesn't, because it's limited by the arm's bandwidth, not the loop rate. The teleop defaults to
-20 Hz (robosuite's usual rate, and what recorded demos use); pass `--control-freq 50` for a tighter nullspace mode.*
+*The workspace center at 20 Hz and 50 Hz. Plate feedback's peak improves a little at 50 Hz (2.4 → 1.8 mm), and its
+settled and back-at-start errors (0.5 mm, 0.007 mm) are set by the wrist, not the loop rate. Feedforward and feedback
+don't improve: their error is the wrist's deflection. The teleop defaults to 20 Hz (robosuite's usual rate, and what
+recorded demos use); pass `--control-freq 50` for a slightly tighter nullspace mode.*
+
+### Without the gripper
+
+`python -m nullspace.evaluate --no-gripper` runs the same study with nothing on the wrist (`StewartWristNoGripper`:
+only the 10 g top plate and the strut rods load it). The arm poses are identical, because the grid is in tcp (flange)
+coordinates. Full numbers: [`results_nogripper/summary.md`](results_nogripper/summary.md).
+
+| | feedforward | feedback | plate |
+|---|---|---|---|
+| usable workspace, no gripper | 0 % | **60 %** (56 of 93) | **65 %** (61 of 94) |
+| usable workspace, with the gripper | 0 % | 0 % | 64 % (63 of 99) |
+| settled plate error, median, no gripper | 2.4 mm / 0.40° | 0.72 mm / 0.10° | 0.56 mm / 0.08° |
+
+- **Feedback works again without the gripper.** Its failure with the gripper was the gripper's weight deflecting the
+  soft wrist. Plate feedback barely changes, because it already measures and removes that deflection.
+- **Plate feedback still fails at 33 points, for arm-side reasons:**
+  - 14 touch a joint limit (far reach, high far points);
+  - 3 are the near-singular folded elbow (low and close);
+  - 12 fail only the wrist-range criterion (89–95%), from the arm's lag during the tilt holds;
+  - 4 are on the lowest layer, with 0.75–6 mm settled.
+- **Tool orientation, no gripper.** Plate feedback is usable at x ±20°, y +20°, y +40° and every z rotation except
+  −135° (unreachable): 10 of 14, against 5 of 14 with the gripper. So gravity loading the tilted soft wrist caused
+  most of the tilt failures. What's left is arm-side:
+  - **x ±40°:** the gripper is held (settled 1.0 and 1.24 mm, back at start 0.15 mm), but the wrist reaches only
+    89–93% of its range. That is the arm lagging, as above. No joint limit is near (margin ≥ 29°).
+  - **y −20° and −40° (tool tilted back toward the base):** settled 8.6 and 15.5 mm, with peaks of 17–32 mm. At −40°
+    the arm hits a joint limit. At −20° it doesn't (11° margin), but it loses its own target while compensating.
+    Feedback fails there too.
 
 ## Limitations and possible improvements
 
@@ -437,13 +521,14 @@ the pose at all (—).*
    - Give OSC a null-space posture suited to the region. robosuite pulls the elbow toward the posture at scene
      reset, which can sit far from where the arm needs to be.
    - Replace OSC with an IK-based controller that uses all 7 joints with joint-limit avoidance.
-2. **Settled error at the wrist's limits.** Feedback cancels the arm's error only while the wrist has room to move.
-   Holding the wrist at a limit leaves the arm's ~0.4–0.5 mm static error (joint friction) visible. A simple fix is to
+2. **Settled error at the wrist's limits.** The wrist can cancel errors (the arm's, and its own sag) only while it
+   has room to move. Held at a limit, its command clips, so the arm's ~0.4–0.5 mm static error (joint friction) and
+   any extra sag show through. For a tilted tool, that sag is several mm. A simple fix is to
    cap the operator's wrist target at, say, 90% of the range in nullspace mode, which keeps a margin for compensation.
    Another is a slow integral term on the arm target, which removes OSC's static error itself; it adds a feedback loop
    on the arm, so it needs a stability check.
-3. **The transient.** Feedback's ~2 mm / 1° peak is the one-tick delay at 20 Hz (it halves at 50 Hz) plus the
-   wrist's own response time. Smoothing the operator's wrist input, or rate-limiting it to what the arm can follow,
+3. **The transient.** Plate feedback's ~2.7 mm / 1.4° peak is mostly the soft wrist's own response time (up to
+   0.7 s when extended), plus the one-tick delay. Smoothing the operator's wrist input, or rate-limiting it to what the arm can follow,
    would shrink it further at the cost of a softer feel.
 4. **The workspace box.** In nullspace mode the arm target is still clipped to the teleop's safety box. Within about
    2 cm of a box face, the clip overrides the compensation and the gripper moves. The evaluation grid stays 5 cm
@@ -451,22 +536,30 @@ the pose at all (—).*
 5. **Simulation vs hardware.** The kinematic model here is exact (it is the simulator's own model, checked to 1e-9).
    On hardware, $T_{tw}$, $h$ and the wrist's pose estimate would come from calibration, and their errors would show
    up directly as plate motion. Feedback also needs a measured flange pose at the control rate, which a Franka
-   provides (its joint encoders, through forward kinematics).
-6. **No contact model in the evaluation.** The cube is moved off the table and nothing is touched. When the gripper
-   is pushing on something, the plate won't stay exactly still. It will comply according to the wrist's stiffness
-   (`platform_stiffness`, which depends on the wrist pose). That interaction isn't characterized here.
+   provides (its joint encoders, through forward kinematics). Plate feedback also needs the **plate's** pose at the
+   control rate. The sim reads it from the wrist's passive joints. A real soft wrist needs a sensor (motion capture,
+   an IMU on the plate) or a model from actuator positions to plate pose, and that model's error shows up as plate
+   motion. Without either, only `feedback` is available, and on this soft wrist it leaves ~5 mm.
+6. **No contact model in the evaluation, and plate feedback stiffens the wrist.** The cube is moved off the table and
+   nothing is touched. Plate feedback's integrator drives the plate back to the anchor against *any* load, a contact
+   as well as the gripper's weight. In nullspace mode, then, the wrist doesn't comply with a contact at steady state,
+   within its range: it acts as if it were rigid. If the wrist's compliance matters during contact, use `feedback`
+   (which complies with the wrist's stiffness, `platform_stiffness`), or drop `PLATE_RATE` so the correction acts
+   only slowly. That interaction isn't characterized here.
 
 ## Reproducing everything
 
 ```bash
 cd /Users/jamesavtges/robosuite_wrist/scripts && source ../robosuite_env/bin/activate
-python -m pytest nullspace/test_nullspace.py -q     # 7 tests, ~10 s
-python -m nullspace.evaluate                        # 408 runs, ~10 min on 10 cores -> results/cases.csv, timeseries_*.npz
+python -m pytest nullspace/test_nullspace.py -q     # 9 tests, ~10 s
+python -m nullspace.evaluate                        # 544 runs, ~10 min on 10 cores -> results/cases.csv, timeseries_*.npz
 python -m nullspace.make_figures                    # -> figures/*.png, results/summary.md
 python -m nullspace.make_demo_gif                   # -> figures/nullspace_demo.gif
+python -m nullspace.evaluate --no-gripper           # the same study, no gripper on the wrist -> results_nogripper/
+python -m nullspace.make_figures --no-gripper       # -> figures_nogripper/, results_nogripper/summary.md
 ```
 
-`python -m nullspace.evaluate --quick` runs 30 cases in about a minute.
+`python -m nullspace.evaluate --quick` runs 80 cases in about two minutes.
 
 ## References
 

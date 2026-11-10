@@ -1,0 +1,8 @@
+# macOS-only packages of robosuite_env (pynput's macOS backend), from `uv pip freeze` on macOS arm64.
+# Rebuild from the repo root: uv venv robosuite_env --python 3.14 && uv pip install --python robosuite_env/bin/python -r requirements_macos.txt
+-r requirements.txt
+pyobjc-core==12.2.2
+pyobjc-framework-applicationservices==12.2.2
+pyobjc-framework-cocoa==12.2.2
+pyobjc-framework-coretext==12.2.2
+pyobjc-framework-quartz==12.2.2

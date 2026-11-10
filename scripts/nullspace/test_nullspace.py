@@ -57,6 +57,21 @@ def test_feedback_cancels_arm_error_and_clips():
     assert np.all(np.abs(ns.wrist_command(T_to_pose6(far))) <= LIMITS + 1e-12)
 
 
+def test_plate_command_learns_the_deflection_and_clips():
+    """A wrist that stops a constant offset short of its command: the plate strategy converges onto the target"""
+    ns = _compensator()
+    ns.anchor(_random_pose6(), np.zeros(6))
+    target, sag = 0.5 * LIMITS, np.array([0.002, -0.001, 0.003, 0.01, 0.0, -0.01])
+    measured = np.zeros(6)
+    for _ in range(100):
+        command = ns.plate_command(target, measured, dt=0.05)
+        measured = command - sag  # the wrist reaches its command minus its deflection
+    assert np.allclose(measured, target, atol=1e-9)
+    for _ in range(100):  # a target at the limit, deflected further out: the command clips, the correction doesn't wind up
+        command = ns.plate_command(LIMITS, LIMITS + 0.5 * LIMITS, dt=0.05)
+    assert np.all(np.abs(command) <= LIMITS + 1e-12) and np.all(np.abs(ns.correction) <= 2 * LIMITS)
+
+
 @pytest.fixture(scope="module")
 def teleop():
     warnings.filterwarnings("ignore")
@@ -94,7 +109,7 @@ def test_mode_cycle(teleop):
     assert seen == [tw.WRIST, tw.NULLSPACE, tw.ARM]
 
 
-@pytest.mark.parametrize("comp, settled_mm, final_mm", [("feedback", 1.0, 0.1), ("feedforward", 2.0, 1.0)])
+@pytest.mark.parametrize("comp, settled_mm, final_mm", [("plate", 1.0, 0.1), ("feedback", 2.0, 0.2), ("feedforward", 3.0, 1.0)])
 def test_plate_stays_put(teleop, comp, settled_mm, final_mm):
     """Closed loop through the real teleop: push the wrist to +x and +roll limits and back, plate barely moves"""
     import teleop_wrist as tw

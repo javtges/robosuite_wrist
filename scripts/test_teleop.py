@@ -192,10 +192,55 @@ def test_teleop_records_and_replays(tmp_path):
     teleop = [
         sys.executable, os.path.join(HERE, "teleop_wrist.py"), "--env", "Lift", "--input", "fake_sine", "--no-render",
         "--no-realtime", "--no-terminal-keys", "--out", out,
-        "--key-script", "0.5:c,2:m,2.5:x,3:g,4:space,5:s,5.5:c,6:backspace,6.5:c,7:s,7.5:q",
+        "--key-script", "0.5:c,1:f,2:m,2.5:x,3:g,4:space,5:s,5.5:c,6:backspace,6.5:c,7:s,7.5:q",
     ]  # fmt: skip
     r = subprocess.run(teleop, cwd=HERE, capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "saved demo_0" in r.stdout and "episode dropped" in r.stdout and "saved demo_1" in r.stdout
+    assert "external force (N)" in r.stdout  # the f printout (computing it must not disturb the replay below)
     r = subprocess.run([sys.executable, os.path.join(HERE, "validate_demos.py"), out], cwd=HERE, capture_output=True, text=True, timeout=300)
     assert r.returncode == 0 and "VALIDATION OK" in r.stdout, r.stdout + r.stderr
+
+
+def test_flange_force_matches_contact(tmp_path):
+    """The flange readout: the wrist's weight alone in free space, and the table's push when the gripper presses on it"""
+    import mujoco
+
+    import make_teleop_gifs as mg
+
+    t = mg.make_teleop(str(tmp_path / "unused.hdf5"))
+    try:
+        m, d = t.env.sim.model._model, t.env.sim.data._data
+        base = m.body(t.gripper.correct_naming(t.wrist_base_body)).id
+        qadr = m.jnt_qposadr[m.body(t.env.cube_body_id).jntadr[0]]
+        d.qpos[qadr : qadr + 3] = [-1.5, -1.5, 0.03]  # cube out of the way
+        mujoco.mj_forward(m, d)
+        for _ in range(40):
+            t.tick()
+        total, ext = t.flange_wrench()
+        assert np.linalg.norm(ext) < 0.05
+        assert np.linalg.norm(total[3:]) == pytest.approx(m.body_subtreemass[base] * 9.81, rel=1e-3)
+
+        def contact_on_gripper():  # world frame, summed over the gripper and wrist's contacts with everything else
+            out = np.zeros(3)
+            for i in range(d.ncon):
+                c = d.contact[i]
+                ours = [m.body_rootid[m.geom_bodyid[g]] == m.body_rootid[base] and m.geom_bodyid[g] >= base for g in (c.geom1, c.geom2)]
+                if ours[0] != ours[1]:
+                    f = np.zeros(6)
+                    mujoco.mj_contactForce(m, d, i, f)
+                    out += (c.frame.reshape(3, 3).T @ f[:3]) * (1 if ours[1] else -1)
+            return out
+
+        t.box["z_min"] = -1.0  # let the arm push the fingers into the table
+        while np.linalg.norm(contact_on_gripper()) < 0.5:
+            t.target[2] -= 0.0005
+            t.tick()
+        t.target[2] -= 0.01
+        for _ in range(60):
+            t.tick()
+        f_world = d.xmat[base].reshape(3, 3) @ t.flange_wrench()[1][3:]
+        assert f_world[2] > 20  # the table pushes the flange up
+        assert np.allclose(f_world, contact_on_gripper(), atol=1.0)
+    finally:
+        t.close()

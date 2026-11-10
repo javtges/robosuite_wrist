@@ -57,20 +57,27 @@ class StewartPlatformConfig:
     control_mode: str = "pose"  # "pose" or "legs"
 
     # Dynamics
-    actuator_kp: float = 100000.0  # leg stiffness at home length (N/m). Above ~2e5, raise leg_armature proportionally.
-    leg_damping: float = 500.0  # at home length
-    # Leg stiffness k = actuator_kp * (L_home / L) ** leg_stiffness_exponent, where L is the commanded (unloaded) leg
-    # length: 1 is an elastic member (k = EA / L), 0 is constant stiffness. Leg damping scales with sqrt(k), keeping
-    # each leg's damping ratio fixed.
-    leg_stiffness_exponent: float = 1.0
-    leg_armature: float = 1.0  # reflected actuator inertia (kg); keeps the stiff legs stable at dt = 2 ms
+    # Leg (strut) stiffness depends on the commanded (unloaded) leg length L: leg_stiffness_contracted (N/m) with the
+    # wrist fully contracted (z = -z_range, every leg at its shortest), leg_stiffness_extended with it fully extended
+    # (z = +z_range), log-linear in L in between, and clamped to that range beyond (e.g. tilted poses). The defaults
+    # follow the real wrist: ~300 N/m struts and ~1.5 kN/m axially for the whole wrist when extended, ~100 kN/m
+    # struts when contracted. Set both equal for constant stiffness.
+    leg_stiffness_contracted: float = 100000.0
+    leg_stiffness_extended: float = 300.0
+    # The values below are for the stiffest leg (leg_stiffness_contracted), and scale with each leg's stiffness k:
+    leg_damping: float = 500.0  # N s/m, scales with sqrt(k), which keeps the plate's damping ratio roughly fixed
+    # Reflected actuator inertia (kg). Scales with k, so each leg's natural frequency stays sqrt(contracted / armature),
+    # which must stay below ~2 / dt for the explicitly integrated leg springs: above ~2e5 N/m, raise it proportionally.
+    # Scaling it down with k keeps this artificial inertia from slowing the soft wrist.
+    leg_armature: float = 1.0
     # Implicit damping on the top plate's (passive) translational / rotational joints. Damps the fast internal
-    # modes of the closed chain, which otherwise get excited by the arm's operational-space controller.
+    # modes of the closed chain, which otherwise get excited by the arm's operational-space controller. Scales with
+    # sqrt(mean leg k / leg_stiffness_contracted), like the legs' damping.
     top_lin_damping: float = 400.0
     top_rot_damping: float = 4.0
     actuator_force_limit: float = 400.0
     base_mass: float = 0.25
-    top_mass: float = 0.15
+    top_mass: float = 0.01  # negligible, as on the real wrist: the gripper carries the weight
     leg_mass: float = 0.02
     # Loop-closure (leg-to-top-plate ball joint) constraint softness. Harder than MuJoCo's defaults, which let the
     # chain stretch by several mm during fast moves. solref time constant must stay >= 2 * timestep. solimp near 1 makes
@@ -140,6 +147,10 @@ class StewartPlatformWrist(WristModel):
             self.stroke = c.leg_stroke
 
         self._home_jacobian_inv = np.linalg.inv(self.leg_jacobian(np.zeros(6)))
+        # Leg offsets from home at which the stiffness reaches its contracted / extended value (mean over the legs;
+        # equal for the symmetric default geometry)
+        self.contracted_offset = self.leg_offsets(np.array([0, 0, -c.z_range, 0, 0, 0])).mean()
+        self.extended_offset = self.leg_offsets(np.array([0, 0, c.z_range, 0, 0, 0])).mean()
 
         # Pose sent to the legs on the last command (after clipping)
         self.last_commanded_pose = np.zeros(6)
@@ -174,17 +185,19 @@ class StewartPlatformWrist(WristModel):
         return np.array([(self.leg_lengths(pose + 1e-7 * e) - self.leg_lengths(pose - 1e-7 * e)) / 2e-7 for e in np.eye(6)]).T
 
     def leg_stiffness(self, leg_offsets):
-        """Axial stiffness (N/m) of each leg when commanded to @leg_offsets from home"""
+        """Axial stiffness (N/m) of each leg when commanded to @leg_offsets from home, times stiffness_scale"""
         c = self.config
-        ratio = (self.home_leg_lengths / (self.home_leg_lengths + leg_offsets)) ** c.leg_stiffness_exponent
-        return self.stiffness_scale * c.actuator_kp * ratio
+        t = np.clip((np.asarray(leg_offsets) - self.contracted_offset) / (self.extended_offset - self.contracted_offset), 0.0, 1.0)
+        k = c.leg_stiffness_contracted * (c.leg_stiffness_extended / c.leg_stiffness_contracted) ** t
+        return self.stiffness_scale * k
 
     def platform_stiffness(self, pose):
         """
         Stiffness of the top plate held at @pose, K = J^T diag(k) J, with the legs commanded to @pose.
         Rows / columns are the pose coordinates (x, y, z, roll, pitch, yaw) of @leg_lengths, i.e. the wrist_top joints
         (N/m, N, N*m/rad): torques act on roll / pitch / yaw about their joint axes, which differ from the base axes
-        once tilted. Leaves out the small geometric term from leg preload (e.g. the gripper's weight).
+        once tilted. Leaves out the geometric term from leg preload (e.g. the gripper's weight): exact without load, but
+        with the gripper hanging on the soft (extended) wrist, the loaded wrist's stiffness differs from this by tens of %.
         """
         J = self.leg_jacobian(pose)
         return J.T @ np.diag(self.leg_stiffness(self.leg_offsets(pose))) @ J
@@ -192,7 +205,17 @@ class StewartPlatformWrist(WristModel):
     def actuator_gains(self, ctrl):
         c = self.config
         k = self.leg_stiffness(ctrl)
-        return k, c.leg_damping * np.sqrt(k / c.actuator_kp)
+        ratio = k / c.leg_stiffness_contracted
+        top = np.sqrt(ratio.mean())
+        return dict(
+            kp=k,
+            damping=c.leg_damping * np.sqrt(ratio),
+            armature=c.leg_armature * ratio,
+            joint_damping={
+                **{f"wrist_top_{a}": c.top_lin_damping * top for a in ("x", "y", "z")},
+                **{f"wrist_top_{a}": c.top_rot_damping * top for a in ("rx", "ry", "rz")},
+            },
+        )
 
     def forward_kinematics(self, leg_offsets, iters=100, tol=1e-9):
         """
@@ -296,6 +319,7 @@ class StewartPlatformWrist(WristModel):
     def xml_string(self):
         c = self.config
         t, Rb, Rt, h = c.plate_thickness, c.base_plate_radius, c.top_plate_radius, c.spacer_height
+        home = self.actuator_gains(np.zeros(6))  # written into the XML; applied again before every step
         vis = 'contype="0" conaffinity="0" group="1"'
         plate_I = lambda m, R: _fmt([m * (3 * R**2 + t**2) / 12] * 2 + [m * R**2 / 2])
 
@@ -311,7 +335,7 @@ class StewartPlatformWrist(WristModel):
         <geom name="wrist_leg{i}_housing" type="cylinder" fromto="0 0 {housing_bottom:.6g} 0 0 {housing_top:.6g}" size="{c.leg_radius}" rgba="0.2 0.2 0.22 1" {vis}/>
         <body name="wrist_leg{i}_rod">
           <inertial pos="0 0 {0.75 * L:.6g}" mass="{c.leg_mass / 2}" diaginertia="5e-6 5e-6 5e-7"/>
-          <joint name="wrist_leg{i}_slide" type="slide" axis="0 0 1" range="{-self.stroke:.6g} {self.stroke:.6g}" limited="true" damping="{c.leg_damping}" armature="{c.leg_armature}"/>
+          <joint name="wrist_leg{i}_slide" type="slide" axis="0 0 1" range="{-self.stroke:.6g} {self.stroke:.6g}" limited="true" damping="{home['damping'][i]:.6g}" armature="{home['armature'][i]:.6g}"/>
           <geom name="wrist_leg{i}_rod_vis" type="capsule" fromto="0 0 {rod_start:.6g} 0 0 {L:.6g}" size="{0.5 * c.leg_radius}" rgba="0.15 0.7 0.25 1" {vis}/>
         </body>
       </body>"""
@@ -326,12 +350,12 @@ class StewartPlatformWrist(WristModel):
             for i, L in enumerate(self.home_leg_lengths)
         )
         acts = "".join(
-            f'\n    <position name="wrist_leg{i}_act" joint="wrist_leg{i}_slide" kp="{c.actuator_kp}" ctrllimited="true" ctrlrange="{-self.stroke:.6g} {self.stroke:.6g}" forcelimited="true" forcerange="{-c.actuator_force_limit} {c.actuator_force_limit}"/>'
+            f'\n    <position name="wrist_leg{i}_act" joint="wrist_leg{i}_slide" kp="{home["kp"][i]:.6g}" ctrllimited="true" ctrlrange="{-self.stroke:.6g} {self.stroke:.6g}" forcelimited="true" forcerange="{-c.actuator_force_limit} {c.actuator_force_limit}"/>'
             for i in range(6)
         )
         top_joints = "".join(
             f'\n        <joint name="wrist_top_{n}" type="{typ}" axis="{ax}" armature="1e-4" '
-            f'damping="{c.top_lin_damping if typ == "slide" else c.top_rot_damping}"/>'
+            f'damping="{home["joint_damping"][f"wrist_top_{n}"]:.6g}"/>'
             for n, typ, ax in [
                 ("x", "slide", "1 0 0"),
                 ("y", "slide", "0 1 0"),
