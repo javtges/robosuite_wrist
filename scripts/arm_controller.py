@@ -3,12 +3,15 @@ Arm controller selection for the teleop and the scripts: robosuite's OSC_POSE, o
 HSA-UMI runs on the real arm (franka_streaming_impedance_controller, a port of serl_franka_controllers), with its gains.
 
     cfg = load_composite_controller_config(robot=ROBOT)
-    apply_arm_controller(cfg, "impedance")                         # HSA gains below
-    apply_arm_controller(cfg, "impedance", gains_yaml=PATH)        # gains read from HSA-UMI's hsa_controllers.yaml
+    apply_arm_controller(cfg, "impedance", robot="fr3")            # HSA gains below, the FR3's
+    apply_arm_controller(cfg, "impedance", gains_yaml=PATH)        # gains read from an HSA-UMI nuc/config yaml
 
-The gains are the deployment values in HSA-UMI/nuc/config/hsa_controllers.yaml (which repeats and explains them); that
-file is the source of truth, and test_arm_controller.py checks this copy against it when the HSA-UMI checkout is next
-to this repo. Pass --arm-gains-yaml to read it directly instead.
+The gains are the deployment values in HSA-UMI's nuc/config (which repeats and explains them), one file per robot:
+`hsa_controllers_fr3.yaml` for the FR3 and `hsa_controllers.yaml` for the FER. Those files are the source of truth,
+and test_arm_controller.py checks these copies against them when the HSA-UMI checkout is next to this repo. Pass
+--arm-gains-yaml to read a file directly instead. The two robots differ only in the nullspace tier: the FER's was
+retuned on 2026-10-02 (docs/hsa-smoothness-fixes.md: 10 hit the 20 N ceiling 25 cm out, 0.2 let the elbow drift to a
+joint limit), the FR3 still runs serl_franka_controllers' defaults.
 
 What each number does (the law is tau = J^T (-K clip(e) - D xdot) + nullspace + coriolis):
     translational_stiffness / rotational_stiffness   K: N/m and N m/rad, the spring between the target and the tcp
@@ -28,9 +31,7 @@ constant goal per policy step instead.
 
 import re
 
-HSA_GAINS_SOURCE = "HSA-UMI/nuc/config/hsa_controllers.yaml"
-
-HSA_GAINS = dict(
+_COMMON = dict(
     translational_stiffness=2000.0,
     translational_damping=89.0,
     rotational_stiffness=150.0,
@@ -39,11 +40,19 @@ HSA_GAINS = dict(
     rotational_clip=0.05,
     translational_ki=0.0,
     rotational_ki=0.0,
-    nullspace_stiffness=1.0,
-    joint1_nullspace_stiffness=10.0,
     max_pos_speed=1.0,
     max_rot_speed=3.14,
 )
+
+HSA_GAINS = {
+    "fr3": dict(_COMMON, nullspace_stiffness=0.2, joint1_nullspace_stiffness=100.0),
+    "fer": dict(_COMMON, nullspace_stiffness=1.0, joint1_nullspace_stiffness=10.0),
+}
+HSA_GAINS_SOURCE = {
+    "fr3": "HSA-UMI/nuc/config/hsa_controllers_fr3.yaml",
+    "fer": "HSA-UMI/nuc/config/hsa_controllers.yaml",
+}
+GAIN_KEYS = tuple(_COMMON) + ("nullspace_stiffness", "joint1_nullspace_stiffness")
 
 # franka_streaming_impedance_controller constants that aren't parameters
 NULLSPACE_LAMBDA = 0.2  # dampedPseudoInverse's default
@@ -58,24 +67,24 @@ ARM_CONTROLLERS = ("osc", "impedance")
 def read_gains_yaml(path):
     """
     The scalar gains of a ros2_control parameter file (`key: value` lines under ros__parameters), as floats, for the
-    keys in HSA_GAINS. No yaml dependency: the file is flat where it matters.
+    keys in GAIN_KEYS. No yaml dependency: the file is flat where it matters.
     """
     found = {}
-    pattern = re.compile(r"^\s*(" + "|".join(HSA_GAINS) + r")\s*:\s*([-+0-9.eE]+)")
+    pattern = re.compile(r"^\s*(" + "|".join(GAIN_KEYS) + r")\s*:\s*([-+0-9.eE]+)")
     with open(path) as f:
         for line in f:
             m = pattern.match(line)
             if m:
                 found[m.group(1)] = float(m.group(2))
-    missing = sorted(set(HSA_GAINS) - set(found))
+    missing = sorted(set(GAIN_KEYS) - set(found))
     if missing:
         raise ValueError(f"{path}: no value for {missing}")
     return found
 
 
-def impedance_config(gains=None, reference="chunks", chunk_len=CHUNK_LEN):
-    """CARTESIAN_IMPEDANCE part-controller keys for @gains (HSA_GAINS by default)"""
-    g = dict(HSA_GAINS, **(gains or {}))
+def impedance_config(gains=None, reference="chunks", chunk_len=CHUNK_LEN, robot="fr3"):
+    """CARTESIAN_IMPEDANCE part-controller keys for @gains (HSA_GAINS[@robot] by default)"""
+    g = dict(HSA_GAINS[robot], **(gains or {}))
     if reference not in REFERENCES:
         raise ValueError(f"reference must be one of {REFERENCES}, got {reference!r}")
     return dict(
@@ -98,18 +107,20 @@ def impedance_config(gains=None, reference="chunks", chunk_len=CHUNK_LEN):
     )
 
 
-def apply_arm_controller(cfg, name, gains_yaml=None, reference="chunks", chunk_len=CHUNK_LEN, part="right"):
+def apply_arm_controller(cfg, name, gains_yaml=None, reference="chunks", chunk_len=CHUNK_LEN, robot="fr3", part="right"):
     """
     Sets the arm part of a composite controller config to @name: "osc" leaves robosuite's OSC_POSE (kp 150, Lambda-
-    shaped stiffness), "impedance" installs the HSA Cartesian impedance law with HSA_GAINS, or the gains of
-    @gains_yaml, with the robot's streaming reference (@reference "chunks" of @chunk_len waypoints) or a constant goal
-    per step ("hold"). Returns cfg.
+    shaped stiffness), "impedance" installs the HSA Cartesian impedance law with HSA_GAINS[@robot] ("fr3" or "fer"),
+    or the gains of @gains_yaml, with the robot's streaming reference (@reference "chunks" of @chunk_len waypoints) or
+    a constant goal per step ("hold"). Returns cfg.
     """
     if name not in ARM_CONTROLLERS:
         raise ValueError(f"arm controller must be one of {ARM_CONTROLLERS}, got {name!r}")
+    if robot not in HSA_GAINS:
+        raise ValueError(f"robot must be one of {sorted(HSA_GAINS)}, got {robot!r}")
     if name == "impedance":
         gains = read_gains_yaml(gains_yaml) if gains_yaml else None
-        cfg["body_parts"][part].update(impedance_config(gains, reference=reference, chunk_len=chunk_len))
+        cfg["body_parts"][part].update(impedance_config(gains, reference=reference, chunk_len=chunk_len, robot=robot))
     return cfg
 
 
@@ -123,6 +134,7 @@ def describe(cfg, part="right"):
         ref = f"{c.get('chunk_len', 1)}-waypoint chunks, interpolated every sim step" if ref == "chunks" else "goal held per step"
         return (
             f"arm: CARTESIAN_IMPEDANCE K ({k[0]:.0f} N/m, {k[3]:.0f} N m/rad) D ({d[0]:.0f}, {d[1]:.0f}) "
-            f"clip ({clip[0]} m, {clip[1]} rad)" + (f" -> {force:.0f} N ceiling" if force else "") + f" | reference: {ref}"
+            f"clip ({clip[0]} m, {clip[1]} rad)" + (f" -> {force:.0f} N ceiling" if force else "")
+            + f" nullspace ({c.get('nullspace_stiffness')}, joint1 {c.get('joint1_nullspace_stiffness')}) | reference: {ref}"
         )
     return f"arm: {c['type']} kp {c['kp']} (stiffness kp * Lambda, no force ceiling)"

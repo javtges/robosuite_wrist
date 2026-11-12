@@ -54,9 +54,10 @@ class SimulatedPuck:
         pass
 
 
-def make_teleop(out, control_freq=20.0, no_gripper=False, arm_controller="osc"):
+def make_teleop(out, control_freq=20.0, no_gripper=False, arm_controller="osc", robot=None):
     args = types.SimpleNamespace(
         env="Lift", input="none", out=out, control_freq=control_freq, arm_controller=arm_controller, arm_gains_yaml=None,
+        robot=robot or tw.DEFAULT_ROBOT,
         reference="chunks", chunk_len=6,
         max_pos_speed=0.20, max_rot_speed=0.15,
         wrist_pos_speed=0.04, wrist_rot_speed=0.35, axis_map="hsa", deadzone=0.0, print_axes=False,

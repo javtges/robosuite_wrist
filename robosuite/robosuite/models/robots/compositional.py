@@ -106,10 +106,11 @@ class PandaDexLH(Panda):
         return {"right": [0.5, -0.5, 0.5, -0.5]}
 
 
-class PandaStewartAloha(Panda):
+class StewartAlohaMixin:
     """
-    Panda arm + 6-DoF Stewart platform wrist + ALOHA gripper (see models/grippers/wrist_gripper.py).
-    Use gripper_types="StewartAlohaGripperLockedWrist" to keep the wrist fixed at home (7-dim action).
+    A Franka arm + 6-DoF Stewart platform wrist + ALOHA gripper (see models/grippers/wrist_gripper.py). Mixed into the
+    arm model (PandaStewartAloha, FR3StewartAloha below). Use gripper_types="StewartAlohaGripperLockedWrist" to keep
+    the wrist fixed at home (7-dim action).
     """
 
     @property
@@ -137,3 +138,11 @@ class PandaStewartAloha(Panda):
         cam.set("quat", array_to_string(T.convert_quat(T.quat_multiply(T.quat_inverse(wrist_quat), cam_quat), to="wxyz")))
         top.append(cam)
         gripper.add_mocap_visuals(self)
+
+
+class PandaStewartAloha(StewartAlohaMixin, Panda):
+    """Panda (Franka Emika Robot, HSA-UMI's `fer`) + Stewart wrist + ALOHA gripper"""
+
+
+class FR3StewartAloha(StewartAlohaMixin, FR3):
+    """Franka Research 3 (HSA-UMI's `fr3`) + Stewart wrist + ALOHA gripper: the arm in use from 2026-11"""

@@ -31,7 +31,9 @@ import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
 from robosuite.models.grippers import StewartWristKey
 
-ROBOT = "PandaStewartAloha"
+from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_name
+
+ROBOT = None  # see make_env(robot=...): hsa_robots.DEFAULT_ROBOT (fr3) unless told otherwise
 # Wrist poses (normalized z: -1 fully contracted = stiffest legs, +1 fully extended = softest legs)
 WRIST_PRESETS = {"stiff": -1.0, "home": 0.0, "soft": 1.0}
 
@@ -47,6 +49,7 @@ def make_env(
     arm="osc",
     arm_kp=None,
     seed=None,
+    robot=None,
     **env_kwargs,
 ):
     """
@@ -55,7 +58,8 @@ def make_env(
     StewartPlatformConfig overrides (e.g. leg_stiffness_extended=3000.0), applied to the wrist before the env is built.
     @arm_kp: overrides the controller's kp (OSC: robosuite default 150; impedance: the stiffness itself).
     """
-    cfg = load_composite_controller_config(robot=ROBOT)
+    robot = robot_name(robot or DEFAULT_ROBOT)
+    cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
     if arm == "impedance":
         cfg["body_parts"]["right"].update(type="CARTESIAN_IMPEDANCE", kp=IMPEDANCE_KP, damping_ratio=1.0)
@@ -69,7 +73,7 @@ def make_env(
     try:
         env = suite.make(
             "KeyInsertion",
-            robots=ROBOT,
+            robots=robot,
             controller_configs=cfg,
             control_freq=control_freq,
             has_renderer=False,
@@ -332,6 +336,7 @@ def main():
     p.add_argument("--arm-kp", type=float, default=None, help="arm OSC stiffness gain (robosuite default 150)")
     p.add_argument("--fixed-lock", action="store_true", help="lock at the table center, not randomized")
     p.add_argument("--episodes", type=int, default=1)
+    p.add_argument("--robot", default=DEFAULT_ROBOT, choices=sorted(ROBOTS), help="fr3 or fer (default $HSA_ROBOT or fr3)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--control-freq", type=float, default=20.0)
     p.add_argument("--no-render", action="store_true", help="headless")
@@ -353,7 +358,7 @@ def main():
         env_kwargs["seat_force"] = args.seat_force
     if args.fixed_lock:
         env_kwargs.update(lock_x_range=(0, 0), lock_y_range=(0, 0), lock_yaw_range=(0, 0))
-    env = make_env(args.control_freq, stiffness=stiffness, arm_kp=args.arm_kp, seed=args.seed, **env_kwargs)
+    env = make_env(args.control_freq, stiffness=stiffness, arm_kp=args.arm_kp, seed=args.seed, robot=args.robot, **env_kwargs)
     oracle = KeyOracle(
         env,
         wrist_z=wrist_z,

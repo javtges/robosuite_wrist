@@ -17,14 +17,15 @@ sys.path.insert(0, HERE)
 import arm_controller as ac  # noqa: E402
 from robosuite.controllers.parts.arm.cartesian_impedance import damped_pinv, projector_nullspace_torques  # noqa: E402
 
-HSA_YAML = os.path.normpath(os.path.join(HERE, "..", "..", ac.HSA_GAINS_SOURCE))
 
 
-def test_hsa_gains_match_the_deployment_yaml():
-    """The copy in arm_controller.py is the robot's hsa_controllers.yaml (when the HSA-UMI checkout is alongside)"""
-    if not os.path.exists(HSA_YAML):
-        pytest.skip(f"{HSA_YAML} not found")
-    assert ac.read_gains_yaml(HSA_YAML) == ac.HSA_GAINS
+@pytest.mark.parametrize("robot", sorted(ac.HSA_GAINS))
+def test_hsa_gains_match_the_deployment_yaml(robot):
+    """The copies in arm_controller.py are the robots' nuc/config yamls (when the HSA-UMI checkout is alongside)"""
+    path = os.path.normpath(os.path.join(HERE, "..", "..", ac.HSA_GAINS_SOURCE[robot]))
+    if not os.path.exists(path):
+        pytest.skip(f"{path} not found")
+    assert ac.read_gains_yaml(path) == ac.HSA_GAINS[robot]
 
 
 def test_apply_arm_controller():
@@ -36,6 +37,11 @@ def test_apply_arm_controller():
     assert c["type"] == "CARTESIAN_IMPEDANCE"
     assert c["kp"] == [2000.0] * 3 + [150.0] * 3 and c["damping"] == [89.0, 7.0]
     assert c["translational_clip"] == 0.01 and c["nullspace"] == "projector"
+    assert (c["nullspace_stiffness"], c["joint1_nullspace_stiffness"]) == (0.2, 100.0)  # fr3 default
+    fer = ac.apply_arm_controller(cfg, "impedance", robot="fer")["body_parts"]["right"]
+    assert (fer["nullspace_stiffness"], fer["joint1_nullspace_stiffness"]) == (1.0, 10.0)
+    with pytest.raises(ValueError):
+        ac.apply_arm_controller(cfg, "impedance", robot="ur5")
     assert c["reference"] == "chunks" and c["chunk_len"] == 6 and c["max_pos_speed"] == 1.0
     assert "20 N ceiling" in ac.describe(cfg) and "6-waypoint chunks" in ac.describe(cfg)
     assert ac.apply_arm_controller(cfg, "impedance", reference="hold")["body_parts"]["right"]["reference"] == "hold"

@@ -33,6 +33,8 @@ ROBOT_CLASS_MAPPING = {
     "PandaDexLH": FixedBaseRobot,
     "XArm7": FixedBaseRobot,
     "PandaStewartAloha": WristFixedBaseRobot,
+    "FR3": FixedBaseRobot,
+    "FR3StewartAloha": WristFixedBaseRobot,
 }
 
 target_type_mapping = {

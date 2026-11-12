@@ -1,0 +1,23 @@
+import numpy as np
+
+from robosuite.models.robots.manipulators.manipulator_model import ManipulatorModel
+from robosuite.models.robots.manipulators.panda_robot import Panda
+from robosuite.utils.mjcf_utils import xml_path_completion
+
+
+class FR3(Panda):
+    """
+    Franka Research 3: the Panda's kinematics with the FR3's joint limits, torque limits (87 / 12 N m) and link
+    inertials, taken from franka_description's fr3.urdf. robots/fr3/robot.xml is generated from the Panda model and
+    shares its meshes (the FR3's covers differ only cosmetically). The flange sits 107 mm from link 7 as on the robot.
+    Everything else (mount, default gripper, start pose, controller) is the Panda's.
+
+    Args:
+        idn (int or str): Number or some other unique identification string for this robot instance
+    """
+
+    def __init__(self, idn=0):
+        ManipulatorModel.__init__(self, xml_path_completion("robots/fr3/robot.xml"), idn=idn)
+
+        # robosuite's Panda joint damping, which the wrist's dynamics were tuned against
+        self.set_joint_attribute(attrib="damping", values=np.array((0.1, 0.1, 0.1, 0.1, 0.1, 0.01, 0.01)))

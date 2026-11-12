@@ -1,5 +1,5 @@
 """
-Teleoperate PandaStewartAloha (Panda arm + Stewart wrist + ALOHA gripper) in any robosuite task with a SpaceMouse,
+Teleoperate FR3StewartAloha / PandaStewartAloha (Franka arm + Stewart wrist + ALOHA gripper) in any robosuite task with a SpaceMouse,
 a 6D keyboard, or a fake input, and record demonstrations to a robomimic / robosuite hdf5 file.
 
 Follows HSA-UMI's spacemouse_teleop: the input is a velocity that is integrated into an absolute target pose of the
@@ -46,12 +46,13 @@ import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
 
 from arm_controller import ARM_CONTROLLERS, apply_arm_controller, describe as describe_arm_controller
+from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name
 from demo_writer import DemoWriter
 from teleop_inputs import FakeSineSource, KeyboardSource, NullSource, SpaceMouseSource, TerminalKeys
 from nullspace import STRATEGIES, NullspaceCompensator
 from teleop_math import clamp_workspace, integrate_target, integrate_wrist_target
 
-ROBOT = "PandaStewartAloha"
+ROBOT = robot_name(DEFAULT_ROBOT)  # the default; --robot picks fr3 or fer
 ARM, WRIST, NULLSPACE = 0, 1, 2
 MODE_NAMES = ("arm", "wrist", "nullspace")
 
@@ -128,7 +129,8 @@ class PassiveViewer:
 
 def make_env_args(args):
     """robomimic's env_args: everything needed to rebuild the env (with rendering off)"""
-    cfg = load_composite_controller_config(robot=ROBOT)
+    robot = robot_name(getattr(args, "robot", DEFAULT_ROBOT))
+    cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
     apply_arm_controller(
         cfg,
@@ -136,9 +138,10 @@ def make_env_args(args):
         getattr(args, "arm_gains_yaml", None),
         reference=getattr(args, "reference", "chunks"),
         chunk_len=getattr(args, "chunk_len", 6),
+        robot=robot_key(robot),
     )
     env_kwargs = dict(
-        robots=[ROBOT],
+        robots=[robot],
         **({"gripper_types": "StewartWristNoGripper"} if getattr(args, "no_gripper", False) else {}),
         controller_configs=cfg,
         control_freq=args.control_freq,
@@ -559,6 +562,7 @@ class Teleop:
 
     def run(self):
         print(f"\n{self.args.env} | input: {self.input.name} | writing to {self.args.out} ({len(self.writer.demo_names)} demos)")
+        print(f"robot: {self.env_args['env_kwargs']['robots'][0]} ({robot_key(self.env_args['env_kwargs']['robots'][0])})")
         print(describe_arm_controller(self.env_args["env_kwargs"]["controller_configs"]))
         print("workspace box (base frame, m): " + ", ".join(f"{k} {v:.3f}" for k, v in self.box.items()))
         for k, desc in COMMANDS:
@@ -604,6 +608,8 @@ def main():
     p.add_argument("--env", default="Lift", help="robosuite task (Lift, Stack, PickPlaceCan, NutAssemblySquare, Door, ...)")
     p.add_argument("--input", default="spacemouse", choices=["spacemouse", "keyboard", "fake_sine", "none"])
     p.add_argument("--out", default=None, help="hdf5 file; appended to if it exists (default: ../demos/<env>_<time>.hdf5)")
+    p.add_argument("--robot", default=DEFAULT_ROBOT, choices=sorted(ROBOTS),
+                   help="the arm: fr3 (FR3StewartAloha) or fer (PandaStewartAloha); default $HSA_ROBOT or fr3")
     p.add_argument("--control-freq", type=float, default=20.0, help="policy / teleop rate (Hz); also the recorded rate")
     p.add_argument("--arm-controller", default="osc", choices=list(ARM_CONTROLLERS),
                    help="arm: robosuite's OSC_POSE, or HSA-UMI's Cartesian impedance law with its gains (arm_controller.py)")
