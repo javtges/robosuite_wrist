@@ -53,3 +53,17 @@ def test_schedule_switches_and_case_runs():
         r = ae.run_case(case)
         assert r["result"] in ("seated", "stuck", "jammed", "timeout"), r.get("error")
     assert ae.task_phase(type("O", (), {"phase": KeyOracle.INSERT})(), 0.010) == "slide"
+
+
+def test_wrist_schedule_switches_without_moving_the_key():
+    """An extension switch moves the plate 40 mm; the arm compensation keeps the key within a few mm of its target"""
+    import arm_impedance.wrist_study as ws
+
+    name = "soft_until_seat"
+    case = ae._case("wrist", name, overrides=ae.gains(), dx=0.0, dyaw=0.0, wrist_z=ws.SCHEDULES[name]["free"][0], wrist_schedule=name, mechanism="extension", max_seconds=25.0)
+    r = ae.run_case(case)
+    assert r["result"] == "seated", r
+    assert r["n_switches"] == 1 and r["switch_tool_mm"] < 6.0, r
+    # phases only advance, and the stiffness-scale ramp is monotone
+    sched = ws.WristScheduler("scale_soft_search")
+    assert ws.PHASE_ORDER.index("seat") > ws.PHASE_ORDER.index("slide")

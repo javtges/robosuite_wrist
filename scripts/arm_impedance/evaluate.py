@@ -150,28 +150,35 @@ def run_case(case, on_step=None):
         apply_gains(controller(env), gains(**_gains_kwargs(overrides)))
     oracle = KeyOracle(
         env,
-        wrist_z=WRIST_Z,
+        wrist_z=case.get("wrist_z", WRIST_Z),
         perception_error=(case["dx_mm"] * 1e-3, case["dy_mm"] * 1e-3, np.radians(case["dyaw_deg"])),
         # OSC has no force ceiling: the oracle's 40 N stop stands in for the robot's reflex. The HSA law is bounded by
         # its clip, so it runs until the key seats, stalls (target 15 mm past the seat) or times out
         max_force=40.0 if case["arm"] == "osc" else np.inf,
     )
     hooks = [Scheduler(SCHEDULES[case["schedule"]])] if case.get("schedule") else []
+    if case.get("wrist_schedule"):
+        from arm_impedance.wrist_study import WristScheduler
+
+        hooks.append(WristScheduler(case["wrist_schedule"]))
     hook = hooks[0] if hooks else None
     if on_step is not None:
         hooks.append(on_step)
     combined = (lambda env_, o, row: all(h(env_, o, row) is not False for h in hooks)) if hooks else None
     t0 = time.time()
     try:
-        result, log = run_episode(env, oracle, on_step=combined, reset=False)
+        result, log = run_episode(env, oracle, on_step=combined, reset=False, max_seconds=case.get("max_seconds", 15.0))
     except Exception as e:  # noqa: BLE001
         return dict(case, result="error", error=repr(e))
     row = dict(case, **metrics(result, log), wall_s=time.time() - t0)
     row["max_yaw_deg"] = float(np.degrees(np.abs(log["yaw"][log["phase"] >= KeyOracle.INSERT]).max())) if (log["phase"] >= KeyOracle.INSERT).any() else 0.0
     if case.get("keep_log"):
         row["log"] = log
-        if hook is not None:
+        if hook is not None and hasattr(hook, "trace"):
             row["log"]["schedule_phase"] = np.array([p for _, p in hook.trace])
+    for h in hooks:
+        if hasattr(h, "summary"):
+            row.update(h.summary())
     return row
 
 
