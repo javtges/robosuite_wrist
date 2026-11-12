@@ -55,6 +55,9 @@ def test_fr3_limits_and_inertials_match_the_urdf():
     # the flange (right_hand) is 107 mm from link 7, as fr3_joint8
     hand = m.body("robot0_right_hand")
     assert hand.pos == pytest.approx([0, 0, 0.107])
+    # Menagerie's geometry: the FR3's visual pieces and one convex hull per link, link0 / link1 contact excluded
+    assert m.mesh("robot0_link6_7").id >= 0 and m.mesh("robot0_link7_coll").id >= 0
+    assert m.nexclude == 1
     env.close()
 
 
