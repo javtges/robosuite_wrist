@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LEDGER_COLUMNS = [
     "source", "label", "wrist", "arm", "schedule", "dx_mm", "dyaw_deg", "seed", "result", "depth_mm", "peak_flange_N",
-    "peak_lateral_N", "hold_push_N", "contact_to_seat_s", "max_yaw_deg", "k_t", "k_r", "clip_t_mm", "ceiling_N", "notes",
+    "peak_lateral_N", "hold_push_N", "contact_to_seat_s", "time_s", "max_yaw_deg", "k_t", "k_r", "clip_t_mm", "ceiling_N", "notes",
 ]  # fmt: skip
 REQUIRED = ("label", "dx_mm", "dyaw_deg", "result")
 
@@ -55,7 +55,7 @@ def load_ledger(path):
             missing = [k for k in REQUIRED if not r.get(k, "").strip()]
             if missing:
                 raise ValueError(f"{path}: row {r} lacks {missing}")
-            for k in ("dx_mm", "dyaw_deg", "peak_flange_N", "contact_to_seat_s", "hold_push_N", "peak_lateral_N", "depth_mm"):
+            for k in ("dx_mm", "dyaw_deg", "peak_flange_N", "contact_to_seat_s", "time_s", "hold_push_N", "peak_lateral_N", "depth_mm"):
                 v = r.get(k, "")
                 r[k] = float(v) if v not in ("", None, "nan") else np.nan
             r["result"] = r["result"].strip().lower()
@@ -67,8 +67,16 @@ def _rate(rows):
     return 100.0 * np.mean([r["result"] == "seated" for r in rows]) if rows else np.nan
 
 
+def _num(r, key):
+    v = r.get(key, np.nan)
+    try:
+        return float(v) if v not in ("", None) else np.nan
+    except (TypeError, ValueError):
+        return np.nan
+
+
 def _med(rows, key, seated_only=False):
-    v = [r[key] for r in rows if np.isfinite(r[key]) and (r["result"] == "seated" or not seated_only)]
+    v = [_num(r, key) for r in rows if np.isfinite(_num(r, key)) and (r["result"] == "seated" or not seated_only)]
     return float(np.median(v)) if v else np.nan
 
 
@@ -117,21 +125,29 @@ def fig_success_map(rows, path):
 def fig_forces(rows, path):
     labels = list(dict.fromkeys(r["label"] for r in rows))
     x = np.arange(len(labels))
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4.2), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(max(13, 1.6 * len(labels) + 6), 4.6), constrained_layout=True)
     groups = {label: [r for r in rows if r["label"] == label] for label in labels}
     axes[0].bar(x, [_rate(groups[l]) for l in labels], color="#2a78d6")
     axes[0].set_ylim(0, 105)
     axes[0].set_ylabel("seated (%)")
     axes[0].set_title("Success")
-    axes[1].bar(x, [_med(groups[l], "peak_flange_N") for l in labels], color="#eb6834")
+    forces = [_med(groups[l], "peak_flange_N") for l in labels]
+    axes[1].bar(x, forces, color="#eb6834")
     axes[1].set_ylabel("peak flange force (N, median)")
-    axes[1].set_title("Peak force on the arm")
-    axes[2].bar(x, [_med(groups[l], "contact_to_seat_s", True) for l in labels], color="#0ca30c")
-    axes[2].set_ylabel("contact → seated (s, median of successes)")
+    axes[1].set_title("Peak force on the arm" + ("" if any(np.isfinite(forces)) else " (not in this ledger)"))
+    if any(np.isfinite(_med(groups[l], "contact_to_seat_s", True)) for l in labels):
+        times, ylabel = [_med(groups[l], "contact_to_seat_s", True) for l in labels], "contact → seated (s, median of successes)"
+    else:
+        times, ylabel = [_med(groups[l], "time_s", True) for l in labels], "trial time (s, median of successes)"
+    axes[2].bar(x, times, color="#0ca30c")
+    axes[2].set_ylabel(ylabel)
     axes[2].set_title("Time to seat")
+    # counts above the success bars, so a 3-episode bar is not read like a 100-episode one
+    for xi, l in zip(x, labels):
+        axes[0].text(xi, _rate(groups[l]) + 1, f"n={len(groups[l])}", ha="center", fontsize=8, color=MUTED)
     for ax in axes:
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=20, ha="right")
+        ax.set_xticklabels(labels, rotation=25, ha="right", fontsize=8)
         ax.grid(axis="x", visible=False)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
