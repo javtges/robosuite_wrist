@@ -57,6 +57,7 @@ class SimulatedPuck:
 def make_teleop(out, control_freq=20.0, no_gripper=False, arm_controller="osc"):
     args = types.SimpleNamespace(
         env="Lift", input="none", out=out, control_freq=control_freq, arm_controller=arm_controller, arm_gains_yaml=None,
+        reference="chunks", chunk_len=6,
         max_pos_speed=0.20, max_rot_speed=0.15,
         wrist_pos_speed=0.04, wrist_rot_speed=0.35, axis_map="hsa", deadzone=0.0, print_axes=False,
         reseed_distance=0.15, nullspace_comp="plate", soft_scale=0.3, x_min=0.25, x_max=0.80, y_min=-0.40, y_max=0.40, z_min=None, z_max=0.60,

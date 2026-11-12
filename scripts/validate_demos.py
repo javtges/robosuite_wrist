@@ -81,6 +81,8 @@ def replay(env, g, viewer):
     env.sim.forward()
     gripper.gripper.current_action = np.array(json.loads(g.attrs["gripper_current_action"]))
     robot.part_controllers["right"].update_initial_joints(json.loads(g.attrs["controller_initial_joint"]))
+    if "controller_state" in g.attrs and hasattr(robot.part_controllers["right"], "restore_controller_state"):
+        robot.part_controllers["right"].restore_controller_state(json.loads(g.attrs["controller_state"]))
     actions, scales = g["actions"][()], g["teleop/wrist_stiffness_scale"][()]
     eef = g["next_obs/robot0_eef_pos"][()]
     max_state_err = max_eef_err = 0.0

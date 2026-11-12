@@ -18,6 +18,12 @@ What each number does (the law is tau = J^T (-K clip(e) - D xdot) + nullspace + 
                                                      (2000 N/m * 0.01 m = 20 N)
     translational_ki / rotational_ki                 integral gain, off
     nullspace_stiffness / joint1_nullspace_stiffness pull toward the posture at activation, through a damped projector
+    max_pos_speed / max_rot_speed                    ceiling on how fast the reference (the equilibrium point) may travel
+
+The reference is the robot's too: each action becomes a chunk of CHUNK_LEN absolutely-timed waypoints (HSA-UMI's
+teleop.yaml chunk_len: the target, then the target continued along its last step), spliced into the controller's
+PoseTrajectoryInterpolator and evaluated at every sim step (reference="chunks"). reference="hold" keeps robosuite's
+constant goal per policy step instead.
 """
 
 import re
@@ -35,11 +41,16 @@ HSA_GAINS = dict(
     rotational_ki=0.0,
     nullspace_stiffness=1.0,
     joint1_nullspace_stiffness=10.0,
+    max_pos_speed=1.0,
+    max_rot_speed=3.14,
 )
 
 # franka_streaming_impedance_controller constants that aren't parameters
 NULLSPACE_LAMBDA = 0.2  # dampedPseudoInverse's default
 TORQUE_RATE_LIMIT = 1000.0  # kMaxTorqueRate = 1 N m per 1 ms step
+
+CHUNK_LEN = 6  # HSA-UMI ros2_ws/src/hsa_ros2/config/teleop.yaml chunk_len
+REFERENCES = ("chunks", "hold")
 
 ARM_CONTROLLERS = ("osc", "impedance")
 
@@ -62,9 +73,11 @@ def read_gains_yaml(path):
     return found
 
 
-def impedance_config(gains=None):
+def impedance_config(gains=None, reference="chunks", chunk_len=CHUNK_LEN):
     """CARTESIAN_IMPEDANCE part-controller keys for @gains (HSA_GAINS by default)"""
     g = dict(HSA_GAINS, **(gains or {}))
+    if reference not in REFERENCES:
+        raise ValueError(f"reference must be one of {REFERENCES}, got {reference!r}")
     return dict(
         type="CARTESIAN_IMPEDANCE",
         kp=[g["translational_stiffness"]] * 3 + [g["rotational_stiffness"]] * 3,
@@ -78,20 +91,25 @@ def impedance_config(gains=None):
         joint1_nullspace_stiffness=g["joint1_nullspace_stiffness"],
         nullspace_lambda=NULLSPACE_LAMBDA,
         torque_rate_limit=TORQUE_RATE_LIMIT,
+        reference=reference,
+        chunk_len=int(chunk_len),
+        max_pos_speed=g["max_pos_speed"],
+        max_rot_speed=g["max_rot_speed"],
     )
 
 
-def apply_arm_controller(cfg, name, gains_yaml=None, part="right"):
+def apply_arm_controller(cfg, name, gains_yaml=None, reference="chunks", chunk_len=CHUNK_LEN, part="right"):
     """
     Sets the arm part of a composite controller config to @name: "osc" leaves robosuite's OSC_POSE (kp 150, Lambda-
     shaped stiffness), "impedance" installs the HSA Cartesian impedance law with HSA_GAINS, or the gains of
-    @gains_yaml. Returns cfg.
+    @gains_yaml, with the robot's streaming reference (@reference "chunks" of @chunk_len waypoints) or a constant goal
+    per step ("hold"). Returns cfg.
     """
     if name not in ARM_CONTROLLERS:
         raise ValueError(f"arm controller must be one of {ARM_CONTROLLERS}, got {name!r}")
     if name == "impedance":
         gains = read_gains_yaml(gains_yaml) if gains_yaml else None
-        cfg["body_parts"][part].update(impedance_config(gains))
+        cfg["body_parts"][part].update(impedance_config(gains, reference=reference, chunk_len=chunk_len))
     return cfg
 
 
@@ -101,8 +119,10 @@ def describe(cfg, part="right"):
     if c["type"] == "CARTESIAN_IMPEDANCE":
         k, d, clip = c["kp"], c["damping"], (c.get("translational_clip"), c.get("rotational_clip"))
         force = k[0] * clip[0] if clip[0] is not None else None
+        ref = c.get("reference", "hold")
+        ref = f"{c.get('chunk_len', 1)}-waypoint chunks, interpolated every sim step" if ref == "chunks" else "goal held per step"
         return (
             f"arm: CARTESIAN_IMPEDANCE K ({k[0]:.0f} N/m, {k[3]:.0f} N m/rad) D ({d[0]:.0f}, {d[1]:.0f}) "
-            f"clip ({clip[0]} m, {clip[1]} rad)" + (f" -> {force:.0f} N ceiling" if force else "")
+            f"clip ({clip[0]} m, {clip[1]} rad)" + (f" -> {force:.0f} N ceiling" if force else "") + f" | reference: {ref}"
         )
     return f"arm: {c['type']} kp {c['kp']} (stiffness kp * Lambda, no force ceiling)"

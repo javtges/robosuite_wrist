@@ -130,7 +130,13 @@ def make_env_args(args):
     """robomimic's env_args: everything needed to rebuild the env (with rendering off)"""
     cfg = load_composite_controller_config(robot=ROBOT)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
-    apply_arm_controller(cfg, getattr(args, "arm_controller", "osc"), getattr(args, "arm_gains_yaml", None))
+    apply_arm_controller(
+        cfg,
+        getattr(args, "arm_controller", "osc"),
+        getattr(args, "arm_gains_yaml", None),
+        reference=getattr(args, "reference", "chunks"),
+        chunk_len=getattr(args, "chunk_len", 6),
+    )
     env_kwargs = dict(
         robots=[ROBOT],
         **({"gripper_types": "StewartWristNoGripper"} if getattr(args, "no_gripper", False) else {}),
@@ -377,6 +383,12 @@ class Teleop:
                         # OSC pulls the redundant arm DoF toward this posture (taken at the scene reset); it is controller
                         # state, not sim state, so a replay has to restore it
                         controller_initial_joint=np.asarray(self.robot.part_controllers["right"].initial_joint).tolist(),
+                        # The impedance controller's reference interpolator, torque slew and integral: also controller state
+                        **(
+                            {"controller_state": self.robot.part_controllers["right"].controller_state()}
+                            if hasattr(self.robot.part_controllers["right"], "controller_state")
+                            else {}
+                        ),
                     )
                 )
                 self.success_any = False
@@ -597,6 +609,9 @@ def main():
                    help="arm: robosuite's OSC_POSE, or HSA-UMI's Cartesian impedance law with its gains (arm_controller.py)")
     p.add_argument("--arm-gains-yaml", default=None,
                    help="with --arm-controller impedance: read the gains from HSA-UMI's nuc/config/hsa_controllers.yaml")
+    p.add_argument("--reference", default="chunks", choices=["chunks", "hold"],
+                   help="impedance only: the robot's streaming waypoint chunks interpolated every sim step, or the goal held per step")
+    p.add_argument("--chunk-len", type=int, default=6, help="impedance + chunks: waypoints per chunk (HSA-UMI teleop.yaml: 6)")
     p.add_argument("--max-pos-speed", type=float, default=0.20, help="arm, m/s at full deflection (HSA-UMI: 0.20)")
     p.add_argument("--max-rot-speed", type=float, default=0.15, help="arm, rad/s at full deflection (HSA-UMI: 0.15)")
     p.add_argument("--wrist-pos-speed", type=float, default=0.04, help="wrist, m/s at full deflection")
