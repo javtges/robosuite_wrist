@@ -6,6 +6,7 @@ ledger, including one filled by hand from hardware trials.
     cd scripts
     python -m arm_impedance.small_eval                         # 30 episodes: robot law and OSC, 3 dx x 5 dyaw
     python -m arm_impedance.small_eval --controllers hsa --wrist stiff home soft   # the robot law with three wrists, one panel each
+    python -m arm_impedance.small_eval --video                 # the same 30, with an mp4 of each under results_small/videos/
     python -m arm_impedance.small_eval --schedule gentle_search --dx 0 --dyaw -4 0 4
     python -m arm_impedance.small_eval --out results_small_fer --robot fer   (set HSA_ROBOT=fer first)
 
@@ -18,6 +19,9 @@ import os
 import sys
 import time
 
+if "--video" in sys.argv:
+    os.environ.setdefault("MUJOCO_GL", "egl")  # offscreen rendering, before mujoco is imported
+
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +31,52 @@ from key_insertion.oracle import WRIST_PRESETS  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAMES = {"hsa": "robot law", "osc": "OSC"}
+FPS = 10  # every other control step at 20 Hz
+
+
+class VideoRecorder:
+    """on_step hook: renders a close-up of the lock every other control step into an mp4 (OpenCV, no ffmpeg needed)"""
+
+    def __init__(self, path, title):
+        import cv2
+        import mujoco
+
+        self.cv2, self.mujoco, self.path, self.title = cv2, mujoco, path, title
+        self.renderer = self.writer = None
+        self.n = 0
+
+    def __call__(self, env, oracle, row):
+        self.n += 1
+        if self.n % 2:
+            return True
+        m, d = env.sim.model._model, env.sim.data._data
+        if self.renderer is None:
+            self.renderer = self.mujoco.Renderer(m, 480, 640)
+            self.cam = self.mujoco.MjvCamera()
+            self.cam.lookat[:] = d.site_xpos[m.site("lock_site").id] + [0, 0, 0.04]
+            self.cam.distance, self.cam.azimuth, self.cam.elevation = 0.32, 160, -12
+            self.opt = self.mujoco.MjvOption()
+            self.opt.geomgroup[0] = 0
+            self.writer = self.cv2.VideoWriter(self.path, self.cv2.VideoWriter_fourcc(*"mp4v"), FPS, (640, 480))
+        self.renderer.update_scene(d, self.cam, self.opt)
+        frame = self.renderer.render()[:, :, ::-1].copy()  # RGB -> BGR
+        push = -row["flange_force"][2]
+        lines = [self.title, f"t {row['t']:5.1f} s  phase {oracle.PHASES[oracle.phase]}  depth {row['depth'] * 1e3:5.1f} mm  push {push:5.1f} N"]
+        for i, text in enumerate(lines):
+            self.cv2.putText(frame, text, (10, 24 + 22 * i), self.cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, self.cv2.LINE_AA)
+            self.cv2.putText(frame, text, (10, 24 + 22 * i), self.cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, self.cv2.LINE_AA)
+        self.writer.write(frame)
+        return True
+
+    def close(self, result):
+        if self.writer is not None:
+            frame = self.renderer.render()[:, :, ::-1].copy()
+            self.cv2.putText(frame, result.upper(), (10, 460), self.cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 5, self.cv2.LINE_AA)
+            self.cv2.putText(frame, result.upper(), (10, 460), self.cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2, self.cv2.LINE_AA)
+            for _ in range(FPS):  # hold the last frame a second
+                self.writer.write(frame)
+            self.writer.release()
+            self.renderer.close()
 
 
 def main():
@@ -39,7 +89,10 @@ def main():
     p.add_argument("--clip", type=float, default=None, help="hsa only: translational_clip (mm), the force ceiling / 2000")
     p.add_argument("--seeds", type=int, default=1, help="repeat each case with this many random lock poses (seed 0 = fixed lock)")
     p.add_argument("--out", default=os.path.join(HERE, "results_small"))
+    p.add_argument("--video", action="store_true", help="save an mp4 of every episode under <out>/videos/")
     args = p.parse_args()
+    if args.video:
+        os.makedirs(os.path.join(args.out, "videos"), exist_ok=True)
 
     controllers = [c.strip() for c in args.controllers.split(",") if c.strip()]
     overrides = ae.gains(clip_t=args.clip * 1e-3) if args.clip is not None else ae.gains()
@@ -61,7 +114,14 @@ def main():
                             "small", label, arm=arm, overrides=overrides if arm == "hsa" else None, dx=dx, dyaw=dyaw,
                             schedule=args.schedule if arm == "hsa" else "", fixed_lock=seed == 0, seed=seed,
                         )  # fmt: skip
-                        r = ae.run_case(case)
+                        rec = None
+                        if args.video:
+                            name = f"{n:02d}_{label.replace(' ', '_').replace(',', '')}_dx{dx:+.1f}_dyaw{dyaw:+.0f}.mp4"
+                            rec = VideoRecorder(os.path.join(args.out, "videos", name), f"{label}  believed error dx {dx:+.1f} mm, yaw {dyaw:+.0f} deg")
+                        r = ae.run_case(case, on_step=rec)
+                        if rec is not None:
+                            rec.close(r["result"])
+                            r["notes"] = f"video: videos/{name}"
                         r["wrist"] = wrist
                         r["source"] = "sim"
                         rows.append(r)

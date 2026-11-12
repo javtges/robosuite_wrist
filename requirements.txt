@@ -46,3 +46,7 @@ zipp==4.1.1
 # pynput's Linux backends. They are not part of the macOS freeze, so these are minimum versions, not pins.
 evdev>=1.3; sys_platform == "linux"
 python-xlib>=0.17; sys_platform == "linux"
+# Reading HSA-UMI's rosbag2 (mcap) recordings without ROS: scripts/arm_impedance/bag_forces.py
+rosbags==0.11.9
+lz4==4.4.5
+ruamel-yaml==0.19.1

@@ -141,7 +141,8 @@ def _env(arm, reference, fixed_lock, seed):
     return env
 
 
-def run_case(case):
+def run_case(case, on_step=None):
+    """One episode. @on_step(env, oracle, row) is called after every step, e.g. to record video."""
     overrides = case.get("overrides") or {}
     env = _env(case["arm"], overrides.get("reference", "chunks"), case["fixed_lock"], case["seed"])
     env.reset()  # rebuilds the controllers, so the gains go on afterwards
@@ -155,12 +156,14 @@ def run_case(case):
         # its clip, so it runs until the key seats, stalls (target 15 mm past the seat) or times out
         max_force=40.0 if case["arm"] == "osc" else np.inf,
     )
-    hook = None
-    if case.get("schedule"):
-        hook = Scheduler(SCHEDULES[case["schedule"]])
+    hooks = [Scheduler(SCHEDULES[case["schedule"]])] if case.get("schedule") else []
+    hook = hooks[0] if hooks else None
+    if on_step is not None:
+        hooks.append(on_step)
+    combined = (lambda env_, o, row: all(h(env_, o, row) is not False for h in hooks)) if hooks else None
     t0 = time.time()
     try:
-        result, log = run_episode(env, oracle, on_step=hook, reset=False)
+        result, log = run_episode(env, oracle, on_step=combined, reset=False)
     except Exception as e:  # noqa: BLE001
         return dict(case, result="error", error=repr(e))
     row = dict(case, **metrics(result, log), wall_s=time.time() - t0)
