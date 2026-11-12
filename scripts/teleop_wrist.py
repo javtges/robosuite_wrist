@@ -45,6 +45,7 @@ from scipy.spatial.transform import Rotation
 import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
 
+from arm_controller import ARM_CONTROLLERS, apply_arm_controller, describe as describe_arm_controller
 from demo_writer import DemoWriter
 from teleop_inputs import FakeSineSource, KeyboardSource, NullSource, SpaceMouseSource, TerminalKeys
 from nullspace import STRATEGIES, NullspaceCompensator
@@ -129,6 +130,7 @@ def make_env_args(args):
     """robomimic's env_args: everything needed to rebuild the env (with rendering off)"""
     cfg = load_composite_controller_config(robot=ROBOT)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
+    apply_arm_controller(cfg, getattr(args, "arm_controller", "osc"), getattr(args, "arm_gains_yaml", None))
     env_kwargs = dict(
         robots=[ROBOT],
         **({"gripper_types": "StewartWristNoGripper"} if getattr(args, "no_gripper", False) else {}),
@@ -545,6 +547,7 @@ class Teleop:
 
     def run(self):
         print(f"\n{self.args.env} | input: {self.input.name} | writing to {self.args.out} ({len(self.writer.demo_names)} demos)")
+        print(describe_arm_controller(self.env_args["env_kwargs"]["controller_configs"]))
         print("workspace box (base frame, m): " + ", ".join(f"{k} {v:.3f}" for k, v in self.box.items()))
         for k, desc in COMMANDS:
             print(f"  {k:10s} {desc}")
@@ -590,6 +593,10 @@ def main():
     p.add_argument("--input", default="spacemouse", choices=["spacemouse", "keyboard", "fake_sine", "none"])
     p.add_argument("--out", default=None, help="hdf5 file; appended to if it exists (default: ../demos/<env>_<time>.hdf5)")
     p.add_argument("--control-freq", type=float, default=20.0, help="policy / teleop rate (Hz); also the recorded rate")
+    p.add_argument("--arm-controller", default="osc", choices=list(ARM_CONTROLLERS),
+                   help="arm: robosuite's OSC_POSE, or HSA-UMI's Cartesian impedance law with its gains (arm_controller.py)")
+    p.add_argument("--arm-gains-yaml", default=None,
+                   help="with --arm-controller impedance: read the gains from HSA-UMI's nuc/config/hsa_controllers.yaml")
     p.add_argument("--max-pos-speed", type=float, default=0.20, help="arm, m/s at full deflection (HSA-UMI: 0.20)")
     p.add_argument("--max-rot-speed", type=float, default=0.15, help="arm, rad/s at full deflection (HSA-UMI: 0.15)")
     p.add_argument("--wrist-pos-speed", type=float, default=0.04, help="wrist, m/s at full deflection")

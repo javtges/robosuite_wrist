@@ -116,7 +116,8 @@ def main():
         kw = env_args["env_kwargs"]
         print(
             f"{args.file}: {env_args['env_name']}, robots {kw['robots']}, control_freq {kw['control_freq']} Hz, "
-            f"arm input_type {kw['controller_configs']['body_parts']['right']['input_type']}, "
+            f"arm {kw['controller_configs']['body_parts']['right']['type']} "
+            f"input_type {kw['controller_configs']['body_parts']['right']['input_type']}, "
             f"{len(f['data'].keys())} demos, {f['data'].attrs['total']} steps"
         )
         summarize(f, names)
