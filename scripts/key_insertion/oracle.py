@@ -31,7 +31,8 @@ import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
 from robosuite.models.grippers import StewartWristKey
 
-from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_name
+from arm_controller import apply_arm_controller
+from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name
 
 ROBOT = None  # see make_env(robot=...): hsa_robots.DEFAULT_ROBOT (fr3) unless told otherwise
 # Wrist poses (normalized z: -1 fully contracted = stiffest legs, +1 fully extended = softest legs)
@@ -50,23 +51,30 @@ def make_env(
     arm_kp=None,
     seed=None,
     robot=None,
+    arm_overrides=None,
     **env_kwargs,
 ):
     """
     KeyInsertion with an absolute-pose arm controller. @arm: "osc" (the robosuite OSC the teleop uses, stiffness
-    kp * Lambda) or "impedance" (CARTESIAN_IMPEDANCE, diagonal stiffness IMPEDANCE_KP). @stiffness: dict of
-    StewartPlatformConfig overrides (e.g. leg_stiffness_extended=3000.0), applied to the wrist before the env is built.
-    @arm_kp: overrides the controller's kp (OSC: robosuite default 150; impedance: the stiffness itself).
+    kp * Lambda), "impedance" (CARTESIAN_IMPEDANCE, diagonal stiffness IMPEDANCE_KP, Lambda-shaped damping) or "hsa"
+    (the robot's law and gains: arm_controller.apply_arm_controller, with the streaming chunk reference).
+    @stiffness: dict of StewartPlatformConfig overrides (e.g. leg_stiffness_extended=3000.0), applied to the wrist
+    before the env is built. @arm_kp: overrides the controller's kp (OSC: robosuite default 150; impedance: the
+    stiffness itself). @arm_overrides: dict of part-controller keys set last (e.g. translational_clip=0.02).
     """
     robot = robot_name(robot or DEFAULT_ROBOT)
     cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
     if arm == "impedance":
         cfg["body_parts"]["right"].update(type="CARTESIAN_IMPEDANCE", kp=IMPEDANCE_KP, damping_ratio=1.0)
+    elif arm == "hsa":
+        apply_arm_controller(cfg, "impedance", robot=robot_key(robot))
     else:
         assert arm == "osc", f"Unknown arm controller {arm}"
     if arm_kp is not None:
         cfg["body_parts"]["right"]["kp"] = arm_kp
+    if arm_overrides:
+        cfg["body_parts"]["right"].update(arm_overrides)
     default_wrist = StewartWristKey.wrist_config
     if stiffness:
         StewartWristKey.wrist_config = dataclasses.replace(default_wrist, **stiffness)
@@ -337,6 +345,9 @@ def main():
     p.add_argument("--fixed-lock", action="store_true", help="lock at the table center, not randomized")
     p.add_argument("--episodes", type=int, default=1)
     p.add_argument("--robot", default=DEFAULT_ROBOT, choices=sorted(ROBOTS), help="fr3 or fer (default $HSA_ROBOT or fr3)")
+    p.add_argument("--arm", default="osc", choices=["osc", "impedance", "hsa"],
+                   help="arm controller: robosuite OSC, the sim-only diagonal impedance, or the robot's HSA law and gains")
+    p.add_argument("--clip", type=float, default=None, help="with --arm hsa: translational_clip (mm), i.e. the force ceiling / K")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--control-freq", type=float, default=20.0)
     p.add_argument("--no-render", action="store_true", help="headless")
@@ -358,7 +369,9 @@ def main():
         env_kwargs["seat_force"] = args.seat_force
     if args.fixed_lock:
         env_kwargs.update(lock_x_range=(0, 0), lock_y_range=(0, 0), lock_yaw_range=(0, 0))
-    env = make_env(args.control_freq, stiffness=stiffness, arm_kp=args.arm_kp, seed=args.seed, robot=args.robot, **env_kwargs)
+    overrides = {"translational_clip": args.clip * 1e-3} if args.clip is not None else None
+    env = make_env(args.control_freq, stiffness=stiffness, arm=args.arm, arm_kp=args.arm_kp, seed=args.seed, robot=args.robot,
+                   arm_overrides=overrides, **env_kwargs)  # fmt: skip
     oracle = KeyOracle(
         env,
         wrist_z=wrist_z,
