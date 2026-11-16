@@ -98,15 +98,24 @@ class WristScheduler:
                 self.scale_from, self.scale_to, self.scale_t0 = oracle.wrist.stiffness_scale, scale, row["t"]
                 self._remeasure = True
             if abs(z - oracle.wrist_z) > 1e-9 and not self.switching:
-                self._remeasure = True
-                self.n_switches += 1
-                self.switching = True
-                self.target_z = z
-                self._T0 = oracle.T_tip_tcp.copy()
-                self._plate0 = self._free_plate_z(oracle, row)
-                self._err0 = self._tip_axis_pos(oracle) + oracle.insert_height  # tip vs its target, before the switch
-                self._height0 = oracle.insert_height  # the descent pauses while the wrist changes
-                self._settled_since = None
+                self._begin_switch(oracle, row, z)
+        self._advance(oracle, row)
+        return True
+
+    def _begin_switch(self, oracle, row, z):
+        """Start moving the wrist to @z: remember where the tool is so the arm can compensate the plate's travel"""
+        self._remeasure = True
+        self.n_switches += 1
+        self.switching = True
+        self.target_z = z
+        self._T0 = oracle.T_tip_tcp.copy()
+        self._plate0 = self._free_plate_z(oracle, row)
+        self._err0 = self._tip_axis_pos(oracle) + oracle.insert_height  # tip vs its target, before the switch
+        self._height0 = oracle.insert_height  # the descent pauses while the wrist changes
+        self._settled_since = None
+
+    def _advance(self, oracle, row):
+        """One step of the stiffness-scale ramp and of the extension switch in progress"""
         if self.scale_t0 is not None:
             a = min(1.0, (row["t"] - self.scale_t0) / SCALE_RAMP_S)
             oracle.wrist.stiffness_scale = float(np.exp((1 - a) * np.log(self.scale_from) + a * np.log(self.scale_to)))
@@ -132,7 +141,6 @@ class WristScheduler:
         if self._remeasure and not self.switching and self.scale_t0 is None and row["depth"] < -0.002 and hasattr(oracle, "measure_tip_offset"):
             oracle.measure_tip_offset()  # the key hangs differently on the new stiffness: aim with the new offset
             self._remeasure = False
-        return True
 
     @staticmethod
     def _free_plate_z(oracle, row):
