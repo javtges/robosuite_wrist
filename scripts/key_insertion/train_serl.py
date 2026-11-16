@@ -13,9 +13,10 @@ The actor steps at most --actor_hz env steps per second (default 10, the policy 
 sim's speed doesn't set how much data the learner gets. The learner does at most --max_update_ratio updates per online
 transition (default 0.5, i.e. 4 critic steps per transition), so runs on different hardware train on the same schedule
 as long as the learner keeps up with that (check "updates per transition" in learner.log). The actor evaluates the
-deterministic policy every --eval_period env steps and appends a row to
-<run_root>/<mode>_seed<seed>/eval.csv (success rate, episode length, peak flange force, over-force rate, wrist z); with
---nodebug it also logs to wandb.
+deterministic policy every --eval_period env steps and at its last step, and appends a row to
+<run_root>/<mode>_seed<seed>/eval.csv (success rate, episode length, peak flange force, over-force rate, wrist z,
+return); with --nodebug it also logs to wandb. At the end it saves its policy (the learner's latest parameters) to
+<run_root>/<mode>_seed<seed>/final/ (make_ft_figure.py loads it).
 
 Changes from SERL's example: our env (gym.make with mode / seed), the demo buffer and its 50/50 sampling, interleaving
 the two halves so that every critic minibatch is 50/50 (SAC.update_high_utd splits its batch into consecutive
@@ -50,6 +51,7 @@ flags.DEFINE_enum("mode", "variable", ["stiff", "soft", "variable"], "Wrist mode
 flags.DEFINE_integer("seed", 0, "Random seed.")
 flags.DEFINE_string("demo_path", None, "Oracle demos (collect_demos.py). None: no demos (plain SAC).")
 flags.DEFINE_integer("max_traj_length", 100, "Episode length (policy steps at 10 Hz).")
+flags.DEFINE_float("force_penalty", key_insertion.serl_env.FORCE_PENALTY, "Weight of the env's per-step force penalty (0: success reward only).")
 flags.DEFINE_integer("batch_size", 256, "Batch size per critic update (half demos, half online with demos).")
 flags.DEFINE_integer("critic_actor_ratio", 8, "Critic updates per actor update (UTD).")
 flags.DEFINE_integer("max_steps", 1000000, "Actor: env steps. Learner: updates.")
@@ -80,32 +82,37 @@ def run_dir():
 
 
 def make_env(seed):
-    return gym.make("KeyInsertionWrist-v0", mode=FLAGS.mode, seed=seed, max_steps=FLAGS.max_traj_length)
+    return gym.make(
+        "KeyInsertionWrist-v0", mode=FLAGS.mode, seed=seed, max_steps=FLAGS.max_traj_length, force_penalty=FLAGS.force_penalty
+    )
 
 
 def evaluate(agent, env, n):
     """Deterministic policy (the mode of the action distribution), @n episodes. Returns a dict of metrics."""
-    seated, lengths, peaks, over, z_mean = [], [], [], [], []
+    seated, lengths, peaks, over, z_mean, returns = [], [], [], [], [], []
     for _ in range(n):
         obs, _ = env.reset()
         done = truncated = False
-        peak, zs = 0.0, []
+        peak, zs, ret = 0.0, [], 0.0
         while not (done or truncated):
             action = np.asarray(jax.device_get(agent.sample_actions(observations=jax.device_put(obs), argmax=True)))
             obs, reward, done, truncated, info = env.step(action)
             peak = max(peak, info["max_force"])
             zs.append(info["wrist_z"])
+            ret += reward
         seated.append(info["succeed"])
         lengths.append(env.unwrapped.steps)
         peaks.append(peak)
         over.append(info["over_force"])
         z_mean.append(np.mean(zs))
+        returns.append(ret)
     return dict(
         success=float(np.mean(seated)),
         length=float(np.mean(lengths)),
         peak_force=float(np.mean(peaks)),
         over_force=float(np.mean(over)),
         wrist_z=float(np.mean(z_mean)),
+        ret=float(np.mean(returns)),
     )
 
 
@@ -126,7 +133,7 @@ def actor(agent: SACAgent, data_store, env, sampling_rng):
 
     eval_env = make_env(FLAGS.seed + 10000)
     eval_path = os.path.join(run_dir(), "eval.csv")
-    fields = ["env_step", "episodes", "wall_time", "success", "length", "peak_force", "over_force", "wrist_z"]
+    fields = ["env_step", "episodes", "wall_time", "success", "length", "peak_force", "over_force", "wrist_z", "ret"]
     if not os.path.exists(eval_path):
         with open(eval_path, "w", newline="") as f:
             csv.writer(f).writerow(fields)
@@ -170,7 +177,7 @@ def actor(agent: SACAgent, data_store, env, sampling_rng):
         if step % FLAGS.steps_per_update == 0:
             client.update()
 
-        if step % FLAGS.eval_period == 0:
+        if step % FLAGS.eval_period == 0 or step == FLAGS.max_steps - 1:
             with timer.context("eval"):
                 metrics = evaluate(agent, eval_env, FLAGS.eval_n_trajs)
             row = dict(env_step=step, episodes=episodes, wall_time=time.time() - t0, **metrics)
@@ -184,6 +191,9 @@ def actor(agent: SACAgent, data_store, env, sampling_rng):
             client.request("send-stats", {"timer": timer.get_average_times()})
 
     client.stop()
+    final_dir = os.path.abspath(os.path.join(run_dir(), "final"))
+    checkpoints.save_checkpoint(final_dir, agent.state, step=FLAGS.max_steps, overwrite=True)
+    print(f"saved the final policy to {final_dir}")
 
 
 def interleave(online, demo, n):

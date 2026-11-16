@@ -17,6 +17,7 @@ orbax-checkpoint==0.10.3
 distrax==0.1.5
 tensorflow==2.21.0
 tensorflow-probability==0.25.0
+tensorflow-datasets==4.9.10  # serl_launcher.utils.launcher imports it; its setup.py doesn't list it
 tf-keras==2.21.0
 ml-collections==1.1.0
 absl-py==2.5.1
@@ -42,4 +43,5 @@ quadprog==0.1.13
 termcolor==3.3.0
 h5py==3.14.0
 pillow==11.3.0
+matplotlib==3.10.9  # make_ft_figure.py
 -e ./robosuite

@@ -19,14 +19,14 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from key_insertion.serl_env import MODES, KeyInsertionSERL, ScriptedPolicy  # noqa: E402
+from key_insertion.serl_env import FORCE_PENALTY, MODES, KeyInsertionSERL, ScriptedPolicy  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def collect(mode, n, seed=0, noise=0.1):
+def collect(mode, n, seed=0, noise=0.1, force_penalty=FORCE_PENALTY):
     """Returns (transitions, per-episode summaries)"""
-    env = KeyInsertionSERL(mode=mode, seed=seed)
+    env = KeyInsertionSERL(mode=mode, seed=seed, force_penalty=force_penalty)
     policy = ScriptedPolicy(env, noise=noise, seed=seed)
     transitions, episodes = [], []
     for ep in range(n):
@@ -58,12 +58,13 @@ def main():
     p.add_argument("--n", type=int, default=20, help="episodes")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--noise", type=float, default=0.1, help="std of the oracle's action noise (motion only)")
+    p.add_argument("--force_penalty", type=float, default=FORCE_PENALTY, help="weight of the env's force penalty (as train_serl)")
     p.add_argument("--out", default=os.path.join(HERE, "demos"), help="output directory")
     args = p.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     for mode in MODES if args.mode == "all" else [args.mode]:
-        transitions, episodes = collect(mode, args.n, args.seed, args.noise)
+        transitions, episodes = collect(mode, args.n, args.seed, args.noise, args.force_penalty)
         path = os.path.join(args.out, f"{mode}_{args.n}.pkl")
         with open(path, "wb") as f:
             pickle.dump(transitions, f)
