@@ -34,7 +34,7 @@ from matplotlib.patches import Patch  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LEDGER_COLUMNS = [
-    "source", "label", "wrist", "arm", "schedule", "dx_mm", "dyaw_deg", "seed", "result", "depth_mm", "peak_flange_N",
+    "source", "label", "wrist", "wrist_calib", "arm", "schedule", "dx_mm", "dyaw_deg", "seed", "result", "depth_mm", "peak_flange_N",
     "peak_lateral_N", "hold_push_N", "contact_to_seat_s", "time_s", "max_yaw_deg", "k_t", "k_r", "clip_t_mm", "ceiling_N", "notes",
 ]  # fmt: skip
 REQUIRED = ("label", "dx_mm", "dyaw_deg", "result")

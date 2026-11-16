@@ -124,6 +124,7 @@ class Scheduler:
 # ---- cases -----------------------------------------------------------------------------------------------------------
 
 _ENVS = {}
+WRIST_OVERRIDES = {}  # StewartPlatformConfig fields for every env built here (wrist_calibration.WRIST_PRESETS)
 
 
 def _env(arm, reference, fixed_lock, seed):
@@ -132,10 +133,10 @@ def _env(arm, reference, fixed_lock, seed):
     (apply_gains), as the robot's set_parameters would. The random generator is reseeded so each episode depends only
     on its seed.
     """
-    key = (arm, reference, fixed_lock)
+    key = (arm, reference, fixed_lock, tuple(sorted(WRIST_OVERRIDES.items())))
     if key not in _ENVS:
         overrides = {"reference": reference} if arm == "hsa" else None
-        _ENVS[key] = make_env(arm=arm, arm_overrides=overrides, **(FIXED_LOCK if fixed_lock else {}))
+        _ENVS[key] = make_env(arm=arm, arm_overrides=overrides, stiffness=WRIST_OVERRIDES or None, **(FIXED_LOCK if fixed_lock else {}))
     env = _ENVS[key]
     env.rng = np.random.default_rng(seed)
     return env

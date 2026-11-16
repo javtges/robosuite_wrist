@@ -27,7 +27,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import arm_impedance.evaluate as ae  # noqa: E402
 from arm_impedance.ledger_figures import LEDGER_COLUMNS, make_ledger_figures, summarize  # noqa: E402
-from key_insertion.oracle import WRIST_PRESETS  # noqa: E402
+from arm_impedance.wrist_calibration import WRIST_PRESETS  # noqa: E402
+from key_insertion.oracle import WRIST_PRESETS as WRIST_POSES  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAMES = {"hsa": "robot law", "osc": "OSC"}
@@ -88,12 +89,14 @@ def main():
     p.add_argument("--schedule", default="", choices=[""] + list(ae.SCHEDULES), help="hsa only: a variable-impedance schedule")
     p.add_argument("--clip", type=float, default=None, help="hsa only: translational_clip (mm), the force ceiling / 2000")
     p.add_argument("--seeds", type=int, default=1, help="repeat each case with this many random lock poses (seed 0 = fixed lock)")
+    p.add_argument("--wrist-calib", default="default", choices=list(WRIST_PRESETS), help="wrist model: the mentor's defaults, or measured_v0 (wrist_calibration.py)")
     p.add_argument("--out", default=os.path.join(HERE, "results_small"))
     p.add_argument("--video", action="store_true", help="save an mp4 of every episode under <out>/videos/")
     args = p.parse_args()
     if args.video:
         os.makedirs(os.path.join(args.out, "videos"), exist_ok=True)
 
+    ae.WRIST_OVERRIDES = dict(WRIST_PRESETS[args.wrist_calib])
     controllers = [c.strip() for c in args.controllers.split(",") if c.strip()]
     overrides = ae.gains(clip_t=args.clip * 1e-3) if args.clip is not None else ae.gains()
     rows = []
@@ -101,7 +104,7 @@ def main():
     t0 = time.time()
     n = 0
     for wrist in args.wrist:
-        ae.WRIST_Z = WRIST_PRESETS[wrist] if wrist in WRIST_PRESETS else float(wrist)
+        ae.WRIST_Z = WRIST_POSES[wrist] if wrist in WRIST_POSES else float(wrist)
         for arm in controllers:
             for seed in range(args.seeds):
                 for dx in args.dx:
@@ -123,6 +126,7 @@ def main():
                             rec.close(r["result"])
                             r["notes"] = f"video: videos/{name}"
                         r["wrist"] = wrist
+                        r["wrist_calib"] = args.wrist_calib
                         r["source"] = "sim"
                         rows.append(r)
                         depth = r.get("depth_mm", float("nan"))
