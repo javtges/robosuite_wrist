@@ -68,14 +68,15 @@ def summarize(f, names):
 
 
 def replay(env, g, viewer):
-    robot = env.robots[0]
-    gripper = robot.gripper["right"]
     env.reset()
     # Demos recorded in one session share one model: reload only when it changes (a new model needs a new viewer)
     if getattr(env, "_loaded_model_file", None) != g.attrs["model_file"]:
         env.reset_from_xml_string(env.edit_model_xml(g.attrs["model_file"]))
         env._loaded_model_file = g.attrs["model_file"]
     env.sim.reset()
+    # after the reload: the robot, gripper and controllers are rebuilt, so refs taken earlier would be stale
+    robot = env.robots[0]
+    gripper = robot.gripper["right"]
     states = g["states"][()]
     env.sim.set_state_from_flattened(states[0])
     env.sim.forward()
