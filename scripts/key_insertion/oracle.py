@@ -187,7 +187,7 @@ class KeyOracle:
             self.env.step(self.action(hold))
         # The key's tip relative to the tcp, as the wrist (loaded only by the key's weight) holds it now. Frozen from
         # here on: contact deflects the wrist away from this, which is the compliance the task is about.
-        self.T_tip_tcp = np.linalg.inv(self.site_T(self.gripper.important_sites["grip_site"])) @ self.site_T(tcp_site)
+        self.measure_tip_offset()
         # Blade orientation in the lock frame: tip z down the keyhole, blade width along the slot (either way round,
         # whichever is closer to how the key is held now)
         _, R_now = self.env.key_tip_in_lock()
@@ -233,7 +233,7 @@ class KeyOracle:
         if self.phase == self.INSERT:
             self.insert_height -= self.speed * self.dt
             force = np.linalg.norm(self.flange_force())
-            if self.env._check_success():
+            if self.seated():
                 self.seated_at = self.env.sim.data.time
                 self._enter(self.HOLD)
             elif force > self.max_force:
@@ -254,6 +254,15 @@ class KeyOracle:
                 self._enter(self.DONE)
             return self.tcp_target_for_tip(self.tip_goal(self.insert_height))
         return self.tcp_target_for_tip(self.tip_goal(self.insert_height))
+
+    def seated(self):
+        """Is the key seated? The env's success for KeyInsertion; subclasses with a longer task override this"""
+        return bool(self.env._check_success())
+
+    def measure_tip_offset(self):
+        """The key's tip relative to the tcp as the wrist holds it now (free, in the current orientation and sag)"""
+        tcp_site = self.gripper.important_sites["tcp"]
+        self.T_tip_tcp = np.linalg.inv(self.site_T(self.gripper.important_sites["grip_site"])) @ self.site_T(tcp_site)
 
     def _enter(self, phase):
         self.phase, self.t_phase = phase, 0.0
