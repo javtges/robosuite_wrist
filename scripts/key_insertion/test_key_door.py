@@ -31,7 +31,8 @@ def test_mechanism_without_the_arm():
             if seated:
                 d.qpos[env.plunger_qpos_adr] = -env.plunger_travel * 0.95
             q = env.cylinder_angle()
-            d.qfrc_applied[cyl] = (-env.pin_stiffness * q if (not env.key_seated() and q < env.pin_release) else 0.0) + tau
+            fric = -env.cylinder_friction * np.tanh(float(d.qvel[cyl]) / 0.2)
+            d.qfrc_applied[cyl] = (-env.pin_stiffness * q if (not env.key_seated() and q < env.pin_release) else 0.0) + fric + tau
             d.xfrc_applied[door, 1] = fy
             mujoco.mj_step(m, d)
         d.xfrc_applied[door, :] = 0

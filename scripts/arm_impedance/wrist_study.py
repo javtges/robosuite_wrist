@@ -74,8 +74,12 @@ class WristScheduler:
     length; outside a switch nothing is compensated, so the wrist's compliance is exactly the fixed runs'.
     """
 
-    def __init__(self, name):
-        self.schedule = SCHEDULES[name]
+    def __init__(self, name, schedules=None, phase_fn=None, order=None):
+        """@schedules / @phase_fn / @order: the schedule table, the phase function (oracle, row) -> phase name and the
+        phase order; default the key-insertion ones (SCHEDULES, task_phase, PHASE_ORDER)"""
+        self.schedule = (schedules or SCHEDULES)[name]
+        self.phase_fn = phase_fn or (lambda oracle, row: task_phase(oracle, row["depth"]))
+        self.order = order or PHASE_ORDER
         self.current = None
         self.target_z = None
         self.switching = False
@@ -83,15 +87,18 @@ class WristScheduler:
         self.n_switches = 0
         self.scale_from = self.scale_to = None
         self.scale_t0 = None
+        self._remeasure = False  # after a switch, re-measure the tip offset (the wrist's sag changed) before contact
 
     def __call__(self, env, oracle, row):
-        phase = task_phase(oracle, row["depth"])
-        if self.current is None or PHASE_ORDER.index(phase) > PHASE_ORDER.index(self.current):
+        phase = self.phase_fn(oracle, row)
+        if self.current is None or self.order.index(phase) > self.order.index(self.current):
             z, scale = self.schedule[phase]
             self.current = phase
             if abs(scale - oracle.wrist.stiffness_scale) > 1e-9:
                 self.scale_from, self.scale_to, self.scale_t0 = oracle.wrist.stiffness_scale, scale, row["t"]
+                self._remeasure = True
             if abs(z - oracle.wrist_z) > 1e-9 and not self.switching:
+                self._remeasure = True
                 self.n_switches += 1
                 self.switching = True
                 self.target_z = z
@@ -122,6 +129,9 @@ class WristScheduler:
                 self._settled_since = row["t"] if self._settled_since is None else self._settled_since
                 if row["t"] - self._settled_since > 0.3:
                     self.switching = False  # freeze the compensation where the plate ended up
+        if self._remeasure and not self.switching and self.scale_t0 is None and row["depth"] < -0.002 and hasattr(oracle, "measure_tip_offset"):
+            oracle.measure_tip_offset()  # the key hangs differently on the new stiffness: aim with the new offset
+            self._remeasure = False
         return True
 
     @staticmethod

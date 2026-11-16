@@ -114,8 +114,10 @@ class KeyDoor(KeyInsertion):
         joint.set("limited", "true")
         joint.set("range", f"0 {self.cylinder_range:.6g}")
         joint.set("damping", "0.02")
-        joint.set("frictionloss", f"{self.cylinder_friction:.6g}")
-        joint.set("armature", "1e-4")
+        joint.set("armature", "0.02")  # a real cylinder's inertia is tiny; this keeps the explicit Coulomb friction stable
+        # cylinder_friction is applied in _pre_action as a Coulomb torque, not as joint frictionloss: MuJoCo's
+        # frictionloss is a soft constraint scaled by the dof's inertia, and this 50 g cylinder is too light for it to
+        # hold more than a fraction of the set value (0.8 N m set, ~0.1 N m held)
         joint.set("solreflimit", "0.002 1")
         joint.set("solimplimit", "0.99 0.9999 0.001")
         lock.insert(0, joint)
@@ -287,7 +289,9 @@ class KeyDoor(KeyInsertion):
         # and the cylinder free, as in a real lock (the pins only line up with the shear line at rest)
         q = self.cylinder_angle()
         pinned = (not self.key_seated()) and q < self.pin_release
-        self.sim.data.qfrc_applied[self.cylinder_dof_adr] = -self.pin_stiffness * q if pinned else 0.0
+        qd = float(self.sim.data.qvel[self.cylinder_dof_adr])
+        friction = -self.cylinder_friction * np.tanh(qd / 0.2)  # Coulomb, smoothed over 0.2 rad/s (the key turns at 0.8)
+        self.sim.data.qfrc_applied[self.cylinder_dof_adr] = (-self.pin_stiffness * q if pinned else 0.0) + friction
 
     def _reset_internal(self):
         super(KeyInsertion, self)._reset_internal()

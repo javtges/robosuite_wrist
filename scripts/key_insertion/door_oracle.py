@@ -37,8 +37,15 @@ from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name  # noqa: E40
 from key_insertion.oracle import IMPEDANCE_KP, WRIST_PRESETS, KeyOracle, make_T  # noqa: E402
 
 
-def make_door_env(control_freq=20.0, arm="osc", robot=None, arm_overrides=None, offscreen=False, seed=None, **env_kwargs):
-    """KeyDoor with an absolute-pose arm controller, as key_insertion.oracle.make_env builds KeyInsertion"""
+def make_door_env(control_freq=20.0, arm="osc", robot=None, arm_overrides=None, offscreen=False, seed=None, stiffness=None, **env_kwargs):
+    """
+    KeyDoor with an absolute-pose arm controller, as key_insertion.oracle.make_env builds KeyInsertion. @stiffness:
+    StewartPlatformConfig overrides for the wrist (e.g. arm_impedance.wrist_calibration.WRIST_PRESETS["measured_v0"]).
+    """
+    import dataclasses
+
+    from robosuite.models.grippers import StewartWristKey
+
     robot = robot_name(robot or DEFAULT_ROBOT)
     cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
@@ -50,19 +57,25 @@ def make_door_env(control_freq=20.0, arm="osc", robot=None, arm_overrides=None, 
         assert arm == "osc", f"Unknown arm controller {arm}"
     if arm_overrides:
         cfg["body_parts"]["right"].update(arm_overrides)
-    return suite.make(
-        "KeyDoor",
-        robots=robot,
-        controller_configs=cfg,
-        control_freq=control_freq,
-        has_renderer=False,
-        has_offscreen_renderer=offscreen,
-        use_camera_obs=False,
-        ignore_done=True,
-        hard_reset=False,
-        seed=seed,
-        **env_kwargs,
-    )
+    default_wrist = StewartWristKey.wrist_config
+    if stiffness:
+        StewartWristKey.wrist_config = dataclasses.replace(default_wrist, **stiffness)
+    try:
+        return suite.make(
+            "KeyDoor",
+            robots=robot,
+            controller_configs=cfg,
+            control_freq=control_freq,
+            has_renderer=False,
+            has_offscreen_renderer=offscreen,
+            use_camera_obs=False,
+            ignore_done=True,
+            hard_reset=False,
+            seed=seed,
+            **env_kwargs,
+        )
+    finally:
+        StewartWristKey.wrist_config = default_wrist
 
 
 class DoorOracle(KeyOracle):
