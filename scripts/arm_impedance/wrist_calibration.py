@@ -20,6 +20,7 @@ What is measured and what is interpolated:
   - contracted (0 deg) and the levels between: NOT measured. leg_stiffness_contracted stays at the mentor's 100 kN/m
     and the levels between follow the sim's log-linear law. Replace with the push test (0 / 120 / 240 / 360 deg).
 
+The demo regression is `demo_stiffness.py` (run it in the robomimic venv, which has zarr).
 Use: `small_eval --wrist-calib measured_v0`, or `evaluate.WRIST_OVERRIDES = WRIST_PRESETS["measured_v0"]` before
 building envs. Results produced with it carry `wrist_calib=measured_v0` in the ledger.
 """
