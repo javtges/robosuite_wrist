@@ -230,3 +230,70 @@ up. `learner.log` prints the ratio it reached.
   re-aiming first.
 - One latch profile, one box depth (5 mm) and one force limit (80 N). Each of them moves the line between "soft wins"
   and "stiff wins".
+
+## KeyDoor: the lock on a door
+
+`KeyDoor` (`environments/manipulation/key_door.py`, branch `feature/door_task`) puts the same lock in a 3 lb door on a
+vertical hinge, keyhole facing the robot, and extends the task to unlocking and opening:
+
+| part | what |
+|---|---|
+| door | 40 × 50 cm panel, 5 cm thick, 1.36 kg (`door_mass`), hinge at one edge with 0.5 N m s/rad damping and 0.3 N m friction, opening away from the robot; a jamb stop keeps it from swinging toward the robot |
+| lock | KeyInsertion's slot and plunger inside a cylinder with a hinge about the keyhole axis (0 to 90°, 0.15 N m friction). The cylinder is pinned at its rest angle (a 50 N m/rad spring) unless the key is seated; once turned the key is captive, as in a real lock |
+| bolt | coupled to the cylinder angle (MuJoCo joint equality): 12 mm out at 0°, flush at 90°. A frictionless strike on the frame blocks it, so a push on a locked door loads the bolt across its axis and cannot drag it in |
+| frame | hinge post, a latch post that stops below the lock zone and a riser behind the door plane carrying the strike: the zone in front of the keyhole is kept clear because the wrist's 132 mm base follows the keyhole as the door swings |
+| success | door angle ≥ `open_angle` (15°). Observations add `door_angle`, `cylinder_angle`, `bolt_retraction`, `unlocked` |
+| reset | the whole frame is moved by `lock_x_range` / `lock_y_range` / `lock_yaw_range` (default ±2 cm, ±5°) |
+
+The frame convention is KeyInsertion's: the keyhole frame's +z points out of the door toward the robot, the key
+travels −z, and the slot's long side is vertical. Everything the insertion oracle and the arm-impedance studies do
+with `lock_pose()` and `key_tip_in_lock()` works unchanged, with the lock frame now following the door.
+
+![door sequence](figures/door_sequence.png)
+
+`door_oracle.py` is the scripted expert: KeyOracle's approach / align / insert / hold (the approach also turns the
+tool from pointing down to pointing at the door, and the tip offset is re-measured once the tool is horizontal,
+because the wrist sags differently), then **turn** (the tip frame rotates about the keyhole axis at 45°/s until the
+cylinder reaches its stop) and **push** (a force-style command: the target leads the measured flange 12 mm into the
+door along the keyhole axis, which through the robot law's clip is its 20 N ceiling, orientation following the lock and
+the cylinder). With the robot's arm law and no aiming error, every wrist setting opens the door at 10–15 N per phase;
+the soft wrist opens it with a 3° yaw error at under 10 N, and the stiff wrist with the same error never enters the
+slot, as in the flat task.
+
+```bash
+cd scripts
+python -m key_insertion.door_oracle --arm hsa --wrist soft --dyaw 3          # viewer (python on Linux)
+python -m key_insertion.door_oracle --arm hsa --wrist home --no-render --episodes 5
+python -m pytest key_insertion/test_key_door.py -q                             # mechanism + oracle, ~1 min
+```
+
+Two things the door taught about the expert, both of which apply to a policy: a stiffness change or a turn must not
+leave the arm holding a twist against the slot (the cylinder coasting to its stop while the arm held the key 10°
+short wedged the blade at 300 N with the home wrist), and a push on a swinging door is better commanded as a force,
+a short lead from where the flange is, than as a position on the moving lock axis, which goes sideways as soon as the
+tool's yaw lags the door.
+
+### Door demonstrations from the scheduled expert (`door_demos.py`)
+
+`door_demos.py` records expert episodes to the robomimic hdf5 the teleop writes (`demo_writer.py`), so a policy trains
+on them exactly as on teleop demos. Each episode: a random door pose, an aiming error inside the soft wrist's
+tolerance (dx ±1.5 mm, yaw ±3°), a lock friction cycled from `--lock-frictions` (0.15 and 0.4 N m by default, one
+hdf5 per friction because a file's `env_args` must match every demo in it), and the stiffness schedule
+(`soft_insert_home_turn` by default). The 12-dim action's wrist slot carries the schedule at every step: z ≈ 0 while
+approaching, +1 (extended, soft) through insertion and seating, back to 0 (home) for the turn and the push. That
+trace is the supervision for a stiffness head; `teleop/stage` holds the expert's phase. Episodes that fail are kept
+with `success=False` unless `--successes-only`.
+
+```bash
+cd scripts
+python -m key_insertion.door_demos --episodes 4 --out ../demos/door_smoke.hdf5     # try it, then validate_demos.py
+for i in 0 1 2 3; do nice -n 10 python -m key_insertion.door_demos --episodes 200 --shard $i/4 --out ../demos/door_s$i.hdf5 & done; wait
+```
+
+Four shards of 50 take ~6 min at low priority. The first set (2026-11-16, mentor's wrist model): 200 of 200 opened,
+66k steps. Replay exactness: most demos replay within 0.5 mm; some diverge during the turn, where the explicit
+cylinder friction makes the dynamics sensitive to the solver's warm start, which the saved state does not include.
+That does not affect training (robomimic renders observations from the stored states, not from a replay).
+
+Regenerate the set with the calibrated wrist once the push test is in: the schedule's shape does not depend on the
+calibration, the thresholds do.
