@@ -1,0 +1,82 @@
+{
+  "rigid": {
+    "units": "mm",
+    "frame": "assembly STL frame: origin = base plate center on its bottom face, +z up through the key",
+    "board_center": [
+      0.0,
+      39.726,
+      29.807
+    ],
+    "lens_center_approx": [
+      0.0,
+      35.5,
+      38.87
+    ],
+    "optical_axis": [
+      -0.0,
+      -0.4226,
+      0.9063
+    ],
+    "image_width_axis": [
+      0.0,
+      0.9063,
+      0.4226
+    ],
+    "image_height_axis": [
+      1.0,
+      -0.0,
+      0.0
+    ],
+    "aim_point": [
+      0.0,
+      0.0,
+      115.0
+    ],
+    "riser_top_center": [
+      0,
+      0,
+      33.0
+    ],
+    "jaw_top_z": 56.5
+  },
+  "hsa": {
+    "units": "mm",
+    "frame": "assembly STL frame: origin = base plate center on its bottom face, +z up through the key",
+    "board_center": [
+      0.0,
+      39.726,
+      21.807
+    ],
+    "lens_center_approx": [
+      0.0,
+      35.5,
+      30.87
+    ],
+    "optical_axis": [
+      -0.0,
+      -0.4226,
+      0.9063
+    ],
+    "image_width_axis": [
+      0.0,
+      0.9063,
+      0.4226
+    ],
+    "image_height_axis": [
+      1.0,
+      -0.0,
+      0.0
+    ],
+    "aim_point": [
+      0.0,
+      0.0,
+      107.0
+    ],
+    "riser_top_center": [
+      0,
+      0,
+      25.0
+    ],
+    "jaw_top_z": 48.5
+  }
+}
