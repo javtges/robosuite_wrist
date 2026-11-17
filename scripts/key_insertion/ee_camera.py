@@ -12,7 +12,7 @@ Use from code:
 
     from key_insertion.ee_camera import CAMERA, enable, frame, pixel
     enable()                                   # StewartWristKey gets the measured key mount and the camera
-    env = make_env(arm="hsa", camera_names=[CAMERA])
+    env = make_env(arm="hsa", robot=DEFAULT_ROBOT, camera_names=[CAMERA])
     obs = env.reset(); img = frame(obs)        # 480 x 640 x 3 uint8, upright
     u, v = pixel(env, env.lock_pose()[0])      # where the keyhole centre lands in the image (col, row)
 
@@ -32,6 +32,7 @@ if "--check" not in sys.argv:
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from hsa_robots import DEFAULT_ROBOT  # noqa: E402
 from robosuite.models.grippers import EECameraConfig, KeyConfig, StewartWristKey  # noqa: E402
 from robosuite.utils import camera_utils  # noqa: E402
 
@@ -163,7 +164,7 @@ def main():
         env = make_door_env(arm="hsa", seed=args.seed, camera_names=cams)
     else:
         from key_insertion.oracle import KeyOracle as Oracle, make_env, run_episode as run
-        env = make_env(arm="hsa", seed=args.seed, camera_names=cams)
+        env = make_env(arm="hsa", robot=DEFAULT_ROBOT, seed=args.seed, camera_names=cams)
     env.reset()
     g = camera_geometry(env)
     cfg = StewartWristKey.camera_config

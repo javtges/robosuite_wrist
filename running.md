@@ -35,7 +35,7 @@ from `/Users/jamesavtges/robosuite_wrist`, Python imports the `robosuite/` repo 
 
 ## Use it in any task
 
-The robot is named `FR3StewartAloha` (or `PandaStewartAloha`, see "Robots" below). Every standard task stays the same; only `robots=` changes:
+The robot is named `PandaStewartAloha` (the FR3 version is `FR3StewartAloha`, see "Robots" below). Every standard task stays the same; only `robots=` changes:
 
 ```python
 import numpy as np
@@ -43,7 +43,7 @@ import robosuite as suite
 
 env = suite.make(
     "Lift",                         # also Stack, PickPlaceCan, NutAssemblySquare, Door, ...
-    robots="FR3StewartAloha",
+    robots="PandaStewartAloha",     # or "FR3StewartAloha"
     has_renderer=True,              # set False for headless use
     use_camera_obs=False,
 )
@@ -53,11 +53,14 @@ for _ in range(200):
     env.render()
 ```
 
-### Robots: FR3 (default) and FER
+### Robots: FER (the original) and FR3
 
-Two arms carry the wrist, named by HSA-UMI's robot keys. `FR3StewartAloha` (`fr3`, the Franka Research 3 in use from
-November 2026) is the default everywhere; `PandaStewartAloha` (`fer`, the Franka Emika Robot) is the original. Every
-script takes `--robot fr3|fer`, and the default follows `$HSA_ROBOT` as HSA-UMI's own launch files do.
+Two arms carry the wrist, named by HSA-UMI's robot keys (`scripts/hsa_robots.py`). `PandaStewartAloha` (`fer`, the
+Franka Emika Robot) is the original and stays the default of the original scripts: `teleop_wrist.py`,
+`key_insertion.oracle.make_env` and everything built on it (`key_insertion/evaluate.py`, `render_scene.py`,
+`serl_env.py`, the SERL training). `FR3StewartAloha` (`fr3`, the Franka Research 3 in use from November 2026) is the
+default of the HSA studies (`scripts/arm_impedance`, the door task, the end-effector camera). Every script takes
+`--robot fr3|fer`, and `$HSA_ROBOT` overrides both defaults as HSA-UMI's own launch files do.
 
 ```python
 env = suite.make("Lift", robots="FR3StewartAloha")      # or "PandaStewartAloha"

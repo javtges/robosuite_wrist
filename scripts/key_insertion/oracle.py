@@ -32,9 +32,9 @@ from robosuite.controllers import load_composite_controller_config
 from robosuite.models.grippers import StewartWristKey
 
 from arm_controller import apply_arm_controller
-from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name
+from hsa_robots import ORIGINAL_DEFAULT_ROBOT, ROBOTS, robot_key, robot_name
 
-ROBOT = None  # see make_env(robot=...): hsa_robots.DEFAULT_ROBOT (fr3) unless told otherwise
+ROBOT = None  # see make_env(robot=...): PandaStewartAloha (hsa_robots.ORIGINAL_DEFAULT_ROBOT) unless told otherwise
 # Wrist poses (normalized z: -1 fully contracted = stiffest legs, +1 fully extended = softest legs)
 WRIST_PRESETS = {"stiff": -1.0, "home": 0.0, "soft": 1.0}
 
@@ -66,7 +66,7 @@ def make_env(
     stiffness itself). @arm_overrides: dict of part-controller keys set last (e.g. translational_clip=0.02).
     @camera_names: render these cameras into the observations (offscreen; e.g. key_insertion.ee_camera.CAMERA).
     """
-    robot = robot_name(robot or DEFAULT_ROBOT)
+    robot = robot_name(robot or ORIGINAL_DEFAULT_ROBOT)
     cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
     if arm == "impedance":
@@ -360,7 +360,7 @@ def main():
     p.add_argument("--arm-kp", type=float, default=None, help="arm OSC stiffness gain (robosuite default 150)")
     p.add_argument("--fixed-lock", action="store_true", help="lock at the table center, not randomized")
     p.add_argument("--episodes", type=int, default=1)
-    p.add_argument("--robot", default=DEFAULT_ROBOT, choices=sorted(ROBOTS), help="fr3 or fer (default $HSA_ROBOT or fr3)")
+    p.add_argument("--robot", default=ORIGINAL_DEFAULT_ROBOT, choices=sorted(ROBOTS), help="fer or fr3 (default $HSA_ROBOT or fer)")
     p.add_argument("--arm", default="osc", choices=["osc", "impedance", "hsa"],
                    help="arm controller: robosuite OSC, the sim-only diagonal impedance, or the robot's HSA law and gains")
     p.add_argument("--clip", type=float, default=None, help="with --arm hsa: translational_clip (mm), i.e. the force ceiling / K")

@@ -136,7 +136,7 @@ def _env(arm, reference, fixed_lock, seed):
     key = (arm, reference, fixed_lock, tuple(sorted(WRIST_OVERRIDES.items())))
     if key not in _ENVS:
         overrides = {"reference": reference} if arm == "hsa" else None
-        _ENVS[key] = make_env(arm=arm, arm_overrides=overrides, stiffness=WRIST_OVERRIDES or None, **(FIXED_LOCK if fixed_lock else {}))
+        _ENVS[key] = make_env(arm=arm, robot=DEFAULT_ROBOT, arm_overrides=overrides, stiffness=WRIST_OVERRIDES or None, **(FIXED_LOCK if fixed_lock else {}))
     env = _ENVS[key]
     env.rng = np.random.default_rng(seed)
     return env

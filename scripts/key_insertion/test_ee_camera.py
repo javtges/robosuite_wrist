@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from robosuite.models.grippers import EECameraConfig, KeyConfig  # noqa: E402
 
 from key_insertion import ee_camera  # noqa: E402
+from hsa_robots import DEFAULT_ROBOT  # noqa: E402
 from key_insertion.oracle import KeyOracle, make_env, run_episode  # noqa: E402
 
 FIXED = dict(lock_x_range=(0, 0), lock_y_range=(0, 0), lock_yaw_range=(0, 0))
@@ -25,7 +26,7 @@ FIXED = dict(lock_x_range=(0, 0), lock_y_range=(0, 0), lock_yaw_range=(0, 0))
 @pytest.fixture(scope="module")
 def env():
     previous = ee_camera.enable()
-    env = make_env(arm="hsa", camera_names=[ee_camera.CAMERA], **FIXED)
+    env = make_env(arm="hsa", robot=DEFAULT_ROBOT, camera_names=[ee_camera.CAMERA], **FIXED)
     yield env
     env.close()
     ee_camera.restore(previous)

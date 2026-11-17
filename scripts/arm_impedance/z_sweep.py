@@ -25,6 +25,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import arm_impedance.evaluate as ae  # noqa: E402
 from arm_impedance.wrist_calibration import WRIST_PRESETS, normalized_z_to_twist  # noqa: E402
+from hsa_robots import DEFAULT_ROBOT  # noqa: E402
 from key_insertion.evaluate import FIXED_LOCK, metrics  # noqa: E402
 from key_insertion.oracle import KeyOracle, make_env, run_episode  # noqa: E402
 
@@ -39,7 +40,7 @@ _ENVS = {}
 
 def _env(model):
     if model not in _ENVS:
-        _ENVS[model] = make_env(arm="hsa", stiffness=MODELS[model], **FIXED_LOCK)
+        _ENVS[model] = make_env(arm="hsa", robot=DEFAULT_ROBOT, stiffness=MODELS[model], **FIXED_LOCK)
     return _ENVS[model]
 
 

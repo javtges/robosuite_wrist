@@ -46,13 +46,13 @@ import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
 
 from arm_controller import ARM_CONTROLLERS, apply_arm_controller, describe as describe_arm_controller
-from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name
+from hsa_robots import ORIGINAL_DEFAULT_ROBOT, ROBOTS, robot_key, robot_name
 from demo_writer import DemoWriter
 from teleop_inputs import FakeSineSource, KeyboardSource, NullSource, SpaceMouseSource, TerminalKeys
 from nullspace import STRATEGIES, NullspaceCompensator
 from teleop_math import clamp_workspace, integrate_target, integrate_wrist_target
 
-ROBOT = robot_name(DEFAULT_ROBOT)  # the default; --robot picks fr3 or fer
+ROBOT = robot_name(ORIGINAL_DEFAULT_ROBOT)  # PandaStewartAloha unless $HSA_ROBOT / --robot say fr3
 ARM, WRIST, NULLSPACE = 0, 1, 2
 MODE_NAMES = ("arm", "wrist", "nullspace")
 
@@ -129,7 +129,7 @@ class PassiveViewer:
 
 def make_env_args(args):
     """robomimic's env_args: everything needed to rebuild the env (with rendering off)"""
-    robot = robot_name(getattr(args, "robot", DEFAULT_ROBOT))
+    robot = robot_name(getattr(args, "robot", ORIGINAL_DEFAULT_ROBOT))
     cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
     apply_arm_controller(
@@ -608,7 +608,7 @@ def main():
     p.add_argument("--env", default="Lift", help="robosuite task (Lift, Stack, PickPlaceCan, NutAssemblySquare, Door, ...)")
     p.add_argument("--input", default="spacemouse", choices=["spacemouse", "keyboard", "fake_sine", "none"])
     p.add_argument("--out", default=None, help="hdf5 file; appended to if it exists (default: ../demos/<env>_<time>.hdf5)")
-    p.add_argument("--robot", default=DEFAULT_ROBOT, choices=sorted(ROBOTS),
+    p.add_argument("--robot", default=ORIGINAL_DEFAULT_ROBOT, choices=sorted(ROBOTS),
                    help="the arm: fr3 (FR3StewartAloha) or fer (PandaStewartAloha); default $HSA_ROBOT or fr3")
     p.add_argument("--control-freq", type=float, default=20.0, help="policy / teleop rate (Hz); also the recorded rate")
     p.add_argument("--arm-controller", default="osc", choices=list(ARM_CONTROLLERS),
