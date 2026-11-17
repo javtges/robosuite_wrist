@@ -602,10 +602,11 @@ env = suite.make("KeyDoor", robots="FR3StewartAloha")   # 12-dim action; success
 
 ### End-effector camera (`scripts/key_insertion/ee_camera.py`)
 
-HSA-UMI's wide-angle colour camera beside the key, placed from the CAD bracket (`EECameraConfig`, with
-`KeyConfig.measured()` for the real mount's geometry). `ee_camera.enable()` then `make_env(camera_names=[ee_camera.CAMERA])`
-renders `gripper0_right_ee_cam_image` (480×640) into the observations. Details, the sign ambiguities and the fisheye
-approximation: `scripts/key_insertion/README.md`, "The end-effector camera".
+HSA-UMI's OV9782 wide-angle colour camera beside the key, on the bitting side, placed from the CAD bracket
+(`EECameraConfig`, with `KeyConfig.measured()` for the real mount's geometry). `ee_camera.enable()` then
+`make_env(camera_names=[ee_camera.CAMERA])` renders `gripper0_right_ee_cam_image` (480×640) into the observations.
+Details, the image-roll check and the fisheye approximation: `scripts/key_insertion/README.md`, "The end-effector
+camera".
 
 ### SERL version (`KeyInsertionWrist-v0`)
 

@@ -11,14 +11,16 @@ MJCF structure (raw names), +z pointing away from the mount (toward the table wh
       key_mount_vis     (optional) the printed mount as a visual mesh
 
 The blade's width is along the key frame's x, its thickness along y (KeyInsertion's lock frame has the slot's long side
-along y; at lock yaw 0 the robot's initial pose puts the key frame's x there).
+along y; at lock yaw 0 the robot's initial pose puts the key frame's x there). The bitting (the cut edge) is the
+blade's +x edge: visual only, the collision blade stays a box and the lock is sized from it.
 
-The end-effector camera is HSA-UMI's: a wide-angle colour global-shutter USB module (Arducam ezBOX GS B0633, 640x480,
-166 deg diagonal fisheye) on a printed bracket beside the key, looking up the blade at the keyhole. Its placement
-comes from the CAD assemblies (assets/grippers/ee_camera/camera_pose_cam25_top.json): lens 35.5 mm off the key axis
-on the blade-width side, 54.1 mm behind the tip, optical axis tilted 25 deg toward the axis so it crosses the key axis
-22 mm past the tip (where the lock face is once the key is in). The rigid and the HSA mounts differ only in riser
-height; relative to the key tip the camera is at the same place on both, so one definition serves both.
+The end-effector camera is HSA-UMI's: an OmniVision OV9782 colour global-shutter sensor behind a wide-angle lens in an
+Arducam USB module (ezBOX GS, 166 deg diagonal fisheye), run at 640x480, on a printed bracket beside the key looking
+up the blade at the keyhole. It sits on the bitting side and sees the cut edge. Its placement comes from the CAD
+assemblies (assets/grippers/ee_camera/camera_pose_cam25_top.json): lens 35.5 mm off the key axis on the blade-width
+side, 54.1 mm behind the tip, optical axis tilted 25 deg toward the axis so it crosses the key axis 22 mm past the tip
+(where the lock face is once the key is in). The rigid and the HSA mounts differ only in riser height; relative to the
+key tip the camera is at the same place on both, so one definition serves both.
 """
 import hashlib
 import math
@@ -67,20 +69,22 @@ class EECameraConfig:
     The end-effector camera, placed relative to the key tip (all m / deg). Defaults are the CAD assemblies' numbers.
 
     The STL assembly frame (origin at the plate's bottom face, camera on +y) maps onto the key frame by a -90 deg yaw:
-    the camera is on the blade-width side, which is the key frame's +x. Whether it is +x or -x (which end of the blade's
-    width the bracket is on) and whether the image is upright or rolled 180 deg are NOT in the CAD numbers: check both
-    against one real frame and set @side / @roll_180.
+    the camera is on the blade-width side where the bitting is, the key frame's +x (the real bracket faces the cut
+    edge). Whether the image is upright or rolled 180 deg is NOT in the CAD numbers: check against one real frame and
+    set @roll_180.
     """
 
     name: str = "ee_cam"
     offset_from_axis: float = 0.0355  # lens centre to the key axis
     behind_tip: float = 0.05413  # lens centre behind the blade tip, along the key axis (38.87 - 93 mm, rigid CAD)
     tilt_deg: float = 25.0  # optical axis toward the key axis, from the key's +z (atan(0.4226 / 0.9063))
-    side: int = +1  # +1: the camera on the key frame's +x (blade-width) side, -1: on -x
+    side: int = +1  # +1: the camera on the key frame's +x, the bitting side (the real mount); -1: mirrored
     roll_180: bool = False  # True if the real image is upside down relative to this convention
     # Pinhole stand-in for the 166 deg (diagonal) fisheye: fovy that matches the fisheye's pixel scale at the image
     # centre (equidistant f = 400 px / 83 deg = 276 px for 640x480 -> fovy = 2 atan(240 / 276)). The corners of the
-    # real image see more than this; the centre, where the key tip and the keyhole are, matches.
+    # real image see more than this; the centre, where the key tip and the keyhole are, matches. The OV9782 is a
+    # 1280x800 sensor: if the driver's 640x480 is a centre crop rather than a scale, the real field is narrower than
+    # the lens's and this fovy is too wide. Replace it with a checkerboard calibration's focal length.
     fovy: float = 82.0
     width: int = 640
     height: int = 480
@@ -158,6 +162,22 @@ class KeyTool(GripperModel):
         bow = f'size="{c.bow_width / 2} {c.bow_thickness / 2} {c.bow_length / 2}" pos="0 0 {c.bow_length / 2}"'
         blade = f'size="{c.blade_width / 2} {c.blade_thickness / 2} {c.blade_length / 2}" pos="0 0 {c.bow_length + c.blade_length / 2}"'
         assets, camera, mount = "", "", f'<geom name="key_bow_vis" type="box" {bow} contype="0" conaffinity="0" group="1" mass="0" rgba="0.80 0.65 0.25 1"/>'
+        # The blade's look: the bitting cut into the +x edge (depth d, a fixed pattern of teeth), visual only
+        d = min(0.0015, 0.15 * c.blade_width)
+        heights = (0.9, 0.35, 0.7, 0.2, 0.55, 0.8, 0.3, 0.6)
+        n = len(heights)
+        tooth_len = c.blade_length / n
+        blade_vis = [
+            f'<geom name="key_blade_vis" type="box" size="{(c.blade_width - d) / 2:.6g} {c.blade_thickness / 2} {c.blade_length / 2}" '
+            f'pos="{-d / 2:.6g} 0 {c.bow_length + c.blade_length / 2}" contype="0" conaffinity="0" group="1" mass="0" rgba="0.85 0.72 0.30 1"/>'
+        ]
+        for i, h in enumerate(heights):
+            blade_vis.append(
+                f'<geom name="key_tooth{i}_vis" type="box" size="{h * d / 2:.6g} {0.45 * c.blade_thickness:.6g} {0.46 * tooth_len:.6g}" '
+                f'pos="{c.blade_width / 2 - d + h * d / 2:.6g} 0 {c.bow_length + (i + 0.5) * tooth_len:.6g}" '
+                'contype="0" conaffinity="0" group="1" mass="0" rgba="0.85 0.72 0.30 1"/>'
+            )
+        blade_vis = "\n      ".join(blade_vis)
         if self.camera is not None:
             cam = self.camera
             pos, quat = cam.pose_in_key_frame(tip)
@@ -180,7 +200,7 @@ class KeyTool(GripperModel):
       <geom name="key_bow_col" type="box" {bow} mass="{m_bow:.6g}" friction="{fr}" group="0" rgba="0.75 0.6 0.2 1"/>
       {mount}
       <geom name="key_blade_col" type="box" {blade} mass="{m_blade:.6g}" friction="{fr}" group="0" rgba="0.75 0.6 0.2 1"/>
-      <geom name="key_blade_vis" type="box" {blade} contype="0" conaffinity="0" group="1" mass="0" rgba="0.85 0.72 0.30 1"/>
+      {blade_vis}
       {camera}
       <body name="eef" pos="0 0 {tip}" quat="0.707105 0 0 -0.707105">
         <site name="grip_site" pos="0 0 0" size="0.002" rgba="1 0 0 0.5" type="sphere" group="1"/>

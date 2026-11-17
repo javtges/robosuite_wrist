@@ -1,6 +1,7 @@
 """
-HSA-UMI's end-effector camera in the sim: the colour global-shutter module beside the key, looking up the blade at the
-keyhole (robosuite.models.grippers.key_tool.EECameraConfig has the geometry and where it comes from).
+HSA-UMI's end-effector camera in the sim: the OV9782 colour global-shutter module on the bracket beside the key, on
+the bitting side, looking up the blade at the keyhole (robosuite.models.grippers.key_tool.EECameraConfig has the
+geometry and where it comes from).
 
     cd scripts
     MUJOCO_GL=egl python -m key_insertion.ee_camera --out ../demos/ee_cam_check        # one insertion, frames + mp4
@@ -16,9 +17,8 @@ Use from code:
     u, v = pixel(env, env.lock_pose()[0])      # where the keyhole centre lands in the image (col, row)
 
 The image is a pinhole rendering with the fisheye's centre pixel scale (fovy 82 deg); the real lens sees 166 deg
-diagonally, so the real frame's corners show more than the sim's. The sim frame also has the sign ambiguities the CAD
-cannot settle (which side of the blade the bracket is on, whether the image is rolled 180 deg): hold a real frame next
-to a sim frame once and set EECameraConfig.side / roll_180.
+diagonally, so the real frame's corners show more than the sim's. One thing the CAD cannot settle is whether the image
+is upright or rolled 180 deg: hold a real frame next to a sim frame once and set EECameraConfig.roll_180.
 """
 
 import argparse
@@ -150,7 +150,7 @@ def main():
     p.add_argument("--wrist-z", type=float, default=1.0)
     p.add_argument("--dx", type=float, default=0.0, help="aiming error across the slot (mm)")
     p.add_argument("--dyaw", type=float, default=0.0, help="aiming error in yaw (deg)")
-    p.add_argument("--side", type=int, default=1, choices=(1, -1), help="bracket on the key frame's +x or -x")
+    p.add_argument("--side", type=int, default=1, choices=(1, -1), help="bracket on the bitting side (+x, the real mount) or mirrored")
     p.add_argument("--roll-180", action="store_true")
     p.add_argument("--check", action="store_true", help="print the camera geometry and exit (no rendering)")
     p.add_argument("--seed", type=int, default=0)
