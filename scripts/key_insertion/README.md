@@ -297,3 +297,38 @@ That does not affect training (robomimic renders observations from the stored st
 
 Regenerate the set with the calibrated wrist once the push test is in: the schedule's shape does not depend on the
 calibration, the thresholds do.
+
+## The end-effector camera (`ee_camera.py`, branch `feature/ee_camera`)
+
+HSA-UMI's end-effector camera, a wide-angle colour global-shutter USB module (Arducam ezBOX GS, 640×480) on a printed
+bracket beside the key, is in the sim as a MuJoCo camera on the key body: `robosuite.models.grippers.EECameraConfig`,
+placed from the CAD assemblies (`models/assets/grippers/ee_camera/camera_pose_cam25_top.json`, the two `*.stl`): lens
+35.5 mm off the key axis on the blade-width side, 54.1 mm behind the tip, optical axis tilted 25° toward the axis so it
+crosses it 22 mm past the tip. The rigid and the HSA brackets differ only in riser height; relative to the key tip the
+camera is at the same place on both, so one definition serves both. With it comes `KeyConfig.measured()`, the real
+mount's geometry (riser + jaws 43.5 mm above the plate, blade tip 80 mm): the default 43 mm key would put the camera
+inside the wrist's top plate. The printed bracket is a visual mesh on the key, so the jaws fill the near field of the
+image as they do on the robot.
+
+```bash
+cd scripts
+MUJOCO_GL=egl python -m key_insertion.ee_camera --out ../demos/ee_cam_check          # one insertion: mp4 + contact sheet
+MUJOCO_GL=egl python -m key_insertion.ee_camera --out ../demos/ee_cam_check --door   # the door task
+python -m key_insertion.ee_camera --check                                            # geometry against the CAD, no render
+MUJOCO_GL=egl python -m pytest key_insertion/test_ee_camera.py -q                    # ~10 s
+```
+
+![ee camera, one insertion](figures/ee_cam_insertion.png)
+
+In code: `ee_camera.enable()` puts the measured key and the camera on `StewartWristKey`; `make_env(...,
+camera_names=[ee_camera.CAMERA])` (and `make_door_env`) then render `gripper0_right_ee_cam_image` into every
+observation (480×640×3, 6 s per episode with EGL); `ee_camera.frame(obs)` returns it upright and
+`ee_camera.pixel(env, point)` projects a world point into it. The key tip is rigid to the camera, so it sits on one
+pixel, (280, 239), through every episode; the keyhole centre moves, and is the label a detector would learn.
+
+Two things the CAD cannot settle, each a one-flag fix once a real frame is compared to a sim frame: which side of the
+blade's width the bracket is on (`EECameraConfig.side`) and whether the image is rolled 180° (`roll_180`). And one
+approximation: the real lens is a 166° (diagonal) fisheye, the sim camera a pinhole with the fisheye's pixel scale at
+the image centre (`fovy` 82°), so the real frame's corners show more than the sim's. Match the sim to the real camera
+with a checkerboard calibration (fx, fy, the distortion) once the camera is on the wrist; a fisheye remap of the
+rendered frame is then a few lines.
