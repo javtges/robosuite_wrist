@@ -340,10 +340,13 @@ class StewartWristKey(StewartAlohaGripper):
     """
     The Stewart wrist with a rigid key (models/grippers/key_tool.py) on its top plate instead of a gripper, for the
     KeyInsertion task. Action: the 6 wrist dims only. grip_site is at the key's tip.
-    To change the key, replace @key_config before creating the env (KeyInsertion sizes its keyhole from it).
+    To change the key, replace @key_config before creating the env (KeyInsertion sizes its keyhole from it). Set
+    @camera_config (an EECameraConfig) to add HSA-UMI's end-effector camera beside the key: it then renders as
+    "<gripper prefix>ee_cam" (gripper0_right_ee_cam for the first robot). Use KeyConfig.measured() with it.
     """
 
     key_config = KeyConfig()
+    camera_config = None
 
     def _tool(self, idn):
-        return KeyTool(self.key_config, idn=idn), {}
+        return KeyTool(self.key_config, camera=self.camera_config, idn=idn), {}

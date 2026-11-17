@@ -24,7 +24,7 @@ from .wrist_gripper import (
     StewartWristNoGripper,
     StewartWristKey,
 )
-from .key_tool import KeyConfig, KeyTool
+from .key_tool import EECameraConfig, KeyConfig, KeyTool
 
 GRIPPER_MAPPING = {
     "RethinkGripper": RethinkGripper,
