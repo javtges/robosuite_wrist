@@ -37,10 +37,14 @@ from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name  # noqa: E40
 from key_insertion.oracle import IMPEDANCE_KP, WRIST_PRESETS, KeyOracle, make_T  # noqa: E402
 
 
-def make_door_env(control_freq=20.0, arm="osc", robot=None, arm_overrides=None, offscreen=False, seed=None, stiffness=None, **env_kwargs):
+def make_door_env(
+    control_freq=20.0, arm="osc", robot=None, arm_overrides=None, offscreen=False, seed=None, stiffness=None,
+    camera_names=None, camera_heights=480, camera_widths=640, **env_kwargs
+):  # fmt: skip
     """
     KeyDoor with an absolute-pose arm controller, as key_insertion.oracle.make_env builds KeyInsertion. @stiffness:
     StewartPlatformConfig overrides for the wrist (e.g. arm_impedance.wrist_calibration.WRIST_PRESETS["measured_v0"]).
+    @camera_names: render these cameras into the observations (offscreen; e.g. key_insertion.ee_camera.CAMERA).
     """
     import dataclasses
 
@@ -67,8 +71,11 @@ def make_door_env(control_freq=20.0, arm="osc", robot=None, arm_overrides=None, 
             controller_configs=cfg,
             control_freq=control_freq,
             has_renderer=False,
-            has_offscreen_renderer=offscreen,
-            use_camera_obs=False,
+            has_offscreen_renderer=offscreen or bool(camera_names),
+            use_camera_obs=bool(camera_names),
+            camera_names=camera_names or "agentview",
+            camera_heights=camera_heights,
+            camera_widths=camera_widths,
             ignore_done=True,
             hard_reset=False,
             seed=seed,

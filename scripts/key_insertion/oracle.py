@@ -52,6 +52,9 @@ def make_env(
     seed=None,
     robot=None,
     arm_overrides=None,
+    camera_names=None,
+    camera_heights=480,
+    camera_widths=640,
     **env_kwargs,
 ):
     """
@@ -61,6 +64,7 @@ def make_env(
     @stiffness: dict of StewartPlatformConfig overrides (e.g. leg_stiffness_extended=3000.0), applied to the wrist
     before the env is built. @arm_kp: overrides the controller's kp (OSC: robosuite default 150; impedance: the
     stiffness itself). @arm_overrides: dict of part-controller keys set last (e.g. translational_clip=0.02).
+    @camera_names: render these cameras into the observations (offscreen; e.g. key_insertion.ee_camera.CAMERA).
     """
     robot = robot_name(robot or DEFAULT_ROBOT)
     cfg = load_composite_controller_config(robot=robot)
@@ -85,8 +89,11 @@ def make_env(
             controller_configs=cfg,
             control_freq=control_freq,
             has_renderer=False,
-            has_offscreen_renderer=offscreen,
-            use_camera_obs=False,
+            has_offscreen_renderer=offscreen or bool(camera_names),
+            use_camera_obs=bool(camera_names),
+            camera_names=camera_names or "agentview",
+            camera_heights=camera_heights,
+            camera_widths=camera_widths,
             ignore_done=True,
             hard_reset=False,
             seed=seed,
