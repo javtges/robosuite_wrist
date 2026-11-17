@@ -214,6 +214,49 @@ class WristGripperModel(GripperModel):
         weight = mr.Adjoint(mr.RpToTrans(R, p - d.subtree_com[b])).T @ gravity
         return total, total - weight
 
+    def leg_wrench(self, sim):
+        """
+        The wrench the wrist measures itself, from its legs: what flange_wrench is, as the compliant wrist senses it
+        (same convention: (m, f) the wrist applies to the arm, at the flange, in the flange frame). Each leg is a spring
+        and damper between its command and its encoder-read length; its axial force f_i (the leg actuator's spring
+        force, kp * (command - length), plus the leg's damping, -c * d(length)/dt, both known from the encoder) acts
+        along the leg, so the base plate gets -f_i u_i at leg i's base anchor. Summed at the flange, that is everything
+        the legs carry: contact on the tool, and the weight and inertia of the top plate and tool. (The springs alone
+        aren't enough: when the stiffness command changes, the leg commands move and for a moment the springs push ~10 N
+        against the dampers, while the flange carries ~0.)
+
+        Not in it, unlike flange_wrench: the inertia of the base plate and legs, and the damping of the top plate's
+        passive joints (a simulation stand-in, with no path in the real wrist). Idealized: exact spring and damper
+        rates and encoders, no noise.
+
+        Returns (total, external):
+          total     the legs' axial forces, summed at the flange
+          external  total minus what the springs carry at rest (load compensation): the static weight of the top plate
+                    and what it carries, and the axial part of each leg rod's weight (the rod hangs on its spring)
+        """
+        m, d = sim.model._model, sim.data._data
+        if getattr(self, "_legs_model", None) is not m:
+            self._legs_model = m
+            self._leg_act_ids = np.array([m.actuator(self.correct_naming(a)).id for a in self.wrist.actuators])
+            rods = m.jnt_bodyid[m.actuator_trnid[self._leg_act_ids, 0]]  # each actuator drives its leg's rod slide
+            self._leg_body_ids = m.body_parentid[rods]  # the leg (housing) body: origin at the base anchor
+            self._leg_rod_mass = m.body_mass[rods]
+            self._leg_dof_ids = m.jnt_dofadr[m.actuator_trnid[self._leg_act_ids, 0]]
+            self._top_body_id = m.body(self.correct_naming(self.wrist.mount_body)).id
+        b = m.body(self.worldbody[0].get("name")).id
+        R, p = d.xmat[b].reshape(3, 3), d.xpos[b]
+        u = d.xmat[self._leg_body_ids].reshape(-1, 3, 3)[:, :, 2]  # leg axes (world), base anchor -> top anchor
+        f_leg = d.actuator_force[self._leg_act_ids] + d.qfrc_passive[self._leg_dof_ids]  # spring + damper, on the rod
+        f = -f_leg[:, None] * u  # on the base plate, at each base anchor
+        moment = np.cross(d.xpos[self._leg_body_ids] - p, f).sum(axis=0)
+        total = np.concatenate([R.T @ moment, R.T @ f.sum(axis=0)])
+        top = self._top_body_id
+        gravity = np.concatenate([np.zeros(3), m.body_subtreemass[top] * m.opt.gravity])
+        weight = mr.Adjoint(mr.RpToTrans(R, p - d.subtree_com[top])).T @ gravity
+        f_rods = (self._leg_rod_mass * (u @ m.opt.gravity))[:, None] * u  # on the base plate, at each base anchor
+        weight += np.concatenate([R.T @ np.cross(d.xpos[self._leg_body_ids] - p, f_rods).sum(axis=0), R.T @ f_rods.sum(axis=0)])
+        return total, total - weight
+
     @property
     def current_action(self):
         return self._current_action

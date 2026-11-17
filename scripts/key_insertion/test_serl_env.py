@@ -130,6 +130,7 @@ def test_stiffening_under_load_keeps_the_force(variable_env):
 
 
 def run_oracle(mode, seed=0, **policy_kwargs):
+    """Returns (success, steps, peak flange force, last info)"""
     env = se.KeyInsertionSERL(mode=mode, seed=seed)
     policy = se.ScriptedPolicy(env, seed=seed, **policy_kwargs)
     obs, _ = env.reset()
@@ -139,20 +140,20 @@ def run_oracle(mode, seed=0, **policy_kwargs):
         obs, reward, done, truncated, info = env.step(policy(obs))
         peak = max(peak, info["max_force"])
     env.close()
-    return reward, env.steps, peak, info
+    return float(info["succeed"]), env.steps, peak, info
 
 
 @pytest.mark.parametrize("mode", ["stiff", "variable"])
 def test_oracle_seats_the_key(mode):
-    reward, steps, peak, info = run_oracle(mode)
-    assert reward == 1.0 and info["succeed"]
+    success, steps, peak, info = run_oracle(mode)
+    assert success == 1.0 and info["succeed"]
     assert 35.0 < peak < se.FORCE_LIMIT  # the latch's 40 N breakaway, sampled at 50 Hz
 
 
 def test_soft_wrist_cannot_pass_the_latch():
     """Inside the box, the soft wrist runs out of travel at ~19 N, below the latch's 40 N"""
-    reward, steps, peak, info = run_oracle("soft")
-    assert reward == 0.0 and steps == 100
+    success, steps, peak, info = run_oracle("soft")
+    assert success == 0.0 and steps == 100
     assert 15.0 < peak < 25.0
     assert 0.0005 < info["plunger"] < 0.0025
 
@@ -161,10 +162,10 @@ def test_aim_error_costs_force_only_without_compliance():
     """Aiming 1.5 mm and 3 deg off: the variable oracle lets the chamfer line the key up and seats it at the latch's
     force; the stiff wrist wedges it in and passes the force limit"""
     error = (0.0015, 0.0, np.radians(3.0))
-    reward, _, peak, _ = run_oracle("variable", noise=0.0, aim_error=error)
-    assert reward == 1.0 and peak < 50.0
-    reward, _, peak, info = run_oracle("stiff", noise=0.0, aim_error=error)
-    assert reward == 0.0 and info["over_force"] and peak > se.FORCE_LIMIT
+    success, _, peak, _ = run_oracle("variable", noise=0.0, aim_error=error)
+    assert success == 1.0 and peak < 50.0
+    success, _, peak, info = run_oracle("stiff", noise=0.0, aim_error=error)
+    assert success == 0.0 and info["over_force"] and peak > se.FORCE_LIMIT
 
 
 @pytest.mark.parametrize("mode", ["stiff", "variable"])
@@ -182,3 +183,39 @@ def test_independent_of_timestep(mode):
     assert r1 == r2 == 1.0
     assert abs(n1 - n2) <= 2
     assert f1 == pytest.approx(f2, rel=0.15)
+
+
+def test_reward(variable_env):
+    """Per step: the success reward minus the force penalty on the step's peak flange force"""
+    env = variable_env
+    env.reset(seed=0)
+    _, reward, _, _, info = env.step(np.zeros(5))
+    assert not info["succeed"]
+    assert reward == pytest.approx(-se.FORCE_PENALTY * (info["max_force"] / se.FORCE_LIMIT) ** 2)
+    assert reward > -1e-3  # free space: next to no force
+    assert info["max_force_physics"] >= info["max_force"] - 1e-9  # the physics-step peak includes the 50 Hz samples
+
+
+@pytest.mark.parametrize("mode", ["stiff", "soft"])
+def test_force_readings_agree_at_rest(mode):
+    """10 N on the key, held: the wrist's own reading (its legs), the arm's (its joint torques) and MuJoCo's flange
+    wrench agree; with no load all read ~0 (the arm's joints' Coulomb friction shows up as a few tenths)"""
+    env = se.KeyInsertionSERL(mode=mode, seed=0)
+    env.reset(seed=0)
+    hold = np.zeros(env.action_space.shape)
+    read = lambda: (env.gripper.leg_wrench(env.env.sim)[1], env.arm_wrench(), env.gripper.flange_wrench(env.env.sim)[1])  # noqa: E731
+    for _ in range(10):
+        env.step(hold)
+    legs, arm, true = read()
+    assert np.abs(legs).max() < 0.3 and np.abs(arm).max() < 0.6 and np.abs(true).max() < 1e-3
+    m, d = env.env.sim.model._model, env.env.sim.data._data
+    key = m.site_bodyid[env.env.tip_site_id]
+    d.xfrc_applied[key, :3] = [0.5, -0.3, 10.0]  # mostly axial: the soft wrist is 140 N/m laterally
+    for _ in range(20):
+        env.step(hold)
+    legs, arm, true = read()
+    d.xfrc_applied[key] = 0.0
+    env.close()
+    assert true[5] == pytest.approx(-10.0, abs=0.3)  # pushing the tool up reads as -z in the flange frame
+    assert legs == pytest.approx(true, abs=0.4)
+    assert arm == pytest.approx(true, abs=0.6)

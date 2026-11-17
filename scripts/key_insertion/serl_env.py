@@ -24,12 +24,16 @@ of soft-wrist compression, more than the box allows, while the stiff wrist, unle
 in and needs more than FORCE_LIMIT.
 
 Observation (flat Box, 22): key tip position in the lock frame (/1 cm), the tip's orientation error from the slot
-(rotation vector, /0.1 rad), tip velocity (/5 cm/s), flange F/T (moment /2 N*m, force /20 N; what the F/T sensor
-reads), wrist deflection from its commanded pose (6, /5 mm, /0.05 rad; leg encoders), wrist z command (1).
+(rotation vector, /0.1 rad), tip velocity (/5 cm/s), the wrist's F/T at the flange as the wrist itself measures it
+(moment /2 N*m, force /20 N; its legs' spring forces from their encoders, WristGripperModel.leg_wrench), wrist
+deflection from its commanded pose (6, /5 mm, /0.05 rad; leg encoders), wrist z command (1). Idealized sensing (no
+noise).
 
-Reward: 1 and the episode ends when the key is seated (latch passed, plunger >= 90% of its travel), else 0. The episode
-also ends (reward 0) if the flange force passes force_limit (sampled at every arm / wrist command update, 50 Hz), and is
-truncated after max_steps.
+Reward: 1 when the key is seated (latch passed, plunger >= 90% of its travel) without the flange force passing
+force_limit, minus a force penalty on every step: force_penalty * (F / force_limit)^2, F the step's peak flange force
+(the force the wrist puts on the arm, MuJoCo's own: flange_wrench, sampled at every arm / wrist command update, 50 Hz).
+Seating ends the episode; so does passing force_limit (no success reward, also on the step that seats the key:
+info["seated"] still says it went in). Truncated after max_steps.
 """
 
 import os
@@ -70,6 +74,9 @@ BOX_ABOVE = 0.030  # ... at most this far above the lock's top face (m)
 BOX_BELOW = 0.005  # ... at most this far below the seated depth (m)
 BOX_YAW = np.radians(15.0)
 FORCE_LIMIT = 80.0  # N at the flange (2x the latch's breakaway): ends the episode as a failure, like breaking the part
+# Reward per step: -FORCE_PENALTY * (peak flange force / FORCE_LIMIT)^2. A step pushing the latch's 40 N costs 0.06, one
+# at the limit 0.25, against 1 for seating: the push the latch needs stays worth it, harder ones cost more and more
+FORCE_PENALTY = 0.25
 COMPENSATION_DEADBAND = 1.0  # N per axis of flange force ignored by the stiffness-change compensation
 OBS_SCALE = np.concatenate([[0.01] * 3, [0.1] * 3, [0.05] * 3, [2.0] * 3, [20.0] * 3, [0.005] * 3, [0.05] * 3, [1.0]])
 
@@ -85,6 +92,7 @@ class KeyInsertionSERL(gym.Env):
         start_height (2-tuple): ... this far above the lock's top face (m)
         start_yaw (float): ... with the blade within +-start_yaw of the slot (rad)
         force_limit (float): flange force (N) that ends the episode as a failure
+        force_penalty (float): weight of the per-step force penalty (see the module docstring); 0: success reward only
         seed (int or None): for the start randomization
         render_mode (None or "rgb_array"): render() returns the "lockview" close-up
     """
@@ -101,6 +109,7 @@ class KeyInsertionSERL(gym.Env):
         start_height=(0.010, 0.020),
         start_yaw=np.radians(5.0),
         force_limit=FORCE_LIMIT,
+        force_penalty=FORCE_PENALTY,
         seed=None,
         render_mode=None,
         **env_kwargs,
@@ -108,7 +117,7 @@ class KeyInsertionSERL(gym.Env):
         assert mode in MODES, f"Unknown mode {mode}"
         self.mode, self.substeps, self.max_steps = mode, substeps, max_steps
         self.start_xy, self.start_height, self.start_yaw = start_xy, start_height, start_yaw
-        self.force_limit = force_limit
+        self.force_limit, self.force_penalty = force_limit, force_penalty
         self.render_mode = render_mode
         self.env = make_env(
             control_freq=control_hz * substeps,
@@ -121,6 +130,12 @@ class KeyInsertionSERL(gym.Env):
         self.gripper = self.robot.gripper["right"]
         self.wrist = self.gripper.wrist
         self.np_random = np.random.default_rng(seed)
+        self.on_substep = None  # if set, called after every arm / wrist command update (e.g. to log at 50 Hz)
+        # Where the policy believes the keyhole is, relative to where it is: (dx, dy, dyaw) in the lock frame (m, m, rad).
+        # The tip's pose and velocity are observed relative to that believed keyhole, so a policy aims off by this much
+        # all the way into contact, as with a mis-located lock (forces and the wrist's deflection stay true). 0: none
+        self.aim_error = np.zeros(3)
+        self._physics_peak = 0.0  # peak flange force over every physics step of the current policy step (_watch_physics)
 
         n = 5 if mode == "variable" else 4
         self.action_space = spaces.Box(-1.0, 1.0, (n,), dtype=np.float32)
@@ -207,13 +222,57 @@ class KeyInsertionSERL(gym.Env):
         b = self.env.sim.model._model.body(self.gripper.worldbody[0].get("name")).id
         return self.env.sim.data._data.xmat[b].reshape(3, 3)
 
+    def arm_wrench(self):
+        """
+        The wrench at the flange as the arm estimates it from its joint torques, the way a torque-sensing arm (e.g. a
+        Franka's O_F_ext_hat_K) does: tau_ext = tau_model - tau_joints, with tau_model the arm's rigid-body dynamics
+        (gravity, Coriolis, inertia at its measured q, dq, ddq) carrying the wrist and tool as a rigid payload (wrist
+        joints at rest), mapped to the flange through the arm's Jacobian, F = (J^T)^+ tau_ext. Same convention as
+        flange_wrench's external wrench: (m, f) on the arm at the flange, flange frame, payload weight compensated. What
+        a rigid-payload model can't know (the wrist's internal motion) ends up in it. Idealized: exact model (with the
+        rotors' armature and joint damping), torques, and accelerations, except the joints' Coulomb friction (0.1 N*m
+        each, MuJoCo frictionloss), which a model can't predict at rest either: it reads as a few tenths of N / N*m.
+        """
+        m, d = self.env.sim.model._model, self.env.sim.data._data
+        arm = np.asarray(self.robot._ref_joint_vel_indexes)
+        if getattr(self, "_scratch", None) is None:
+            import mujoco
+
+            self._mujoco = mujoco
+            self._scratch = mujoco.MjData(m)
+            self._flange = m.body(self.gripper.worldbody[0].get("name")).id
+            self._tau_model = np.zeros(m.nv)
+        mj, s = self._mujoco, self._scratch
+        # Rigid payload: the arm's own velocities and accelerations only (the kinematics are the last step's, as for
+        # the actuator, passive and constraint forces, so everything is from the same instant)
+        mj.mj_copyData(s, m, d)
+        s.qvel[:] = 0.0
+        s.qvel[arm] = d.qvel[arm]
+        s.qacc[:] = 0.0
+        s.qacc[arm] = d.qacc[arm]
+        mj.mj_comVel(m, s)
+        mj.mj_rne(m, s, 1, self._tau_model)
+        tau_model = self._tau_model[arm] + m.dof_armature[arm] * d.qacc[arm]  # mj_rne leaves out the rotors' inertia
+        # M ddq + bias = tau_actuators + tau_passive + J^T F_ext: what the joint torques don't explain is the flange's load
+        tau_ext = tau_model - d.qfrc_actuator[arm] - d.qfrc_passive[arm]
+        jacp, jacr = np.zeros((3, m.nv)), np.zeros((3, m.nv))
+        mj.mj_jacBody(m, d, jacp, jacr, self._flange)
+        J = np.vstack([jacr[:, arm], jacp[:, arm]])  # (m, f) at the flange's origin, world axes
+        F = np.linalg.lstsq(J.T, tau_ext, rcond=None)[0]  # the wrench applied to the arm's flange
+        R = d.xmat[self._flange].reshape(3, 3)
+        return np.concatenate([R.T @ F[:3], R.T @ F[3:]])
+
     def _obs(self):
         env = self.env
         p, R = env.key_tip_in_lock()
-        rot_err = Rotation.from_matrix(self.R_tip_in_lock.T @ R).as_rotvec()  # tip frame, vs the slot-aligned pose
         _, R_lock = env.lock_pose()
         vel = R_lock.T @ env.sim.data.get_site_xvelp(env.sim.model.site_id2name(env.tip_site_id))
-        wrench = self.gripper.flange_wrench(env.sim)[1]
+        if np.any(self.aim_error):  # observed in the believed keyhole's frame
+            Rz = Rotation.from_euler("z", self.aim_error[2]).as_matrix()
+            p = Rz.T @ (p - np.array([self.aim_error[0], self.aim_error[1], 0.0]))
+            R, vel = Rz.T @ R, Rz.T @ vel
+        rot_err = Rotation.from_matrix(self.R_tip_in_lock.T @ R).as_rotvec()  # tip frame, vs the slot-aligned pose
+        wrench = self.gripper.leg_wrench(env.sim)[1]
         obs = np.concatenate([p, rot_err, vel, wrench, self.wrist_deflection(), [self.z]])
         return (obs / OBS_SCALE).astype(np.float32)
 
@@ -245,6 +304,8 @@ class KeyInsertionSERL(gym.Env):
         z0 = self.z
         z1 = z0 + np.clip(action[4] - z0, -STIFFNESS_RATE, STIFFNESS_RATE) if self.mode == "variable" else z0
         max_force = 0.0
+        self._watch_physics()
+        self._physics_peak = 0.0
         for k in range(1, self.substeps + 1):
             s = k / self.substeps
             z = z0 + s * (z1 - z0)
@@ -257,17 +318,39 @@ class KeyInsertionSERL(gym.Env):
             self.target = start + s * (goal - start)
             self.env.step(self._robot_action(self.tcp_target(z), z))
             max_force = max(max_force, np.linalg.norm(self.gripper.flange_wrench(self.env.sim)[1][3:]))
+            if self.on_substep is not None:
+                self.on_substep()
         self.target = goal
         self.steps += 1
-        success = bool(self.env._check_success())
+        seated = bool(self.env._check_success())
         over = max_force > self.force_limit
-        info = dict(succeed=success, max_force=max_force, over_force=over, plunger=self.env.plunger_depression(), wrist_z=self.z)
-        return self._obs(), float(success), success or over, self.steps >= self.max_steps, info
+        success = seated and not over  # seating by passing the force limit counts as breaking the part
+        reward = float(success) - self.force_penalty * (max_force / self.force_limit) ** 2
+        # max_force (what the reward and the force limit use) is sampled at the 50 Hz updates; max_force_physics is the
+        # peak over every physics step, which also catches spikes shorter than 20 ms
+        info = dict(succeed=success, seated=seated, max_force=max_force, max_force_physics=self._physics_peak, over_force=over,
+                    plunger=self.env.plunger_depression(), wrist_z=self.z)  # fmt: skip
+        return self._obs(), reward, seated or over, self.steps >= self.max_steps, info
+
+    def _watch_physics(self):
+        """Wraps the sim's physics step (once per sim) to track the peak flange force over every physics step"""
+        sim = self.env.sim
+        if getattr(sim, "_peak_watched", False):
+            return
+        name = "step2" if self.env.lite_physics else "step"  # robosuite's base env steps physics with one of them
+        physics_step = getattr(sim, name)
+
+        def stepped(*args, **kwargs):
+            physics_step(*args, **kwargs)
+            self._physics_peak = max(self._physics_peak, np.linalg.norm(self.gripper.flange_wrench(sim)[1][3:]))
+
+        setattr(sim, name, stepped)
+        sim._peak_watched = True
 
     def _compensate(self, z_old, z_new):
         """
         Lock-frame shift of the tip target that keeps the wrist's spring force continuous when its z command (and so
-        its stiffness) goes from @z_old to @z_new. The flange F/T reads the force f the wrist carries; statically its
+        its stiffness) goes from @z_old to @z_new. The wrist's own F/T (its legs, leg_wrench) reads the force f it carries; statically its
         legs are deflected by K_old^-1 f, and with the key held by contact, moving the arm by (K_old^-1 - K_new^-1) f
         leaves them deflected by K_new^-1 f, i.e. carrying the same f. The first COMPENSATION_DEADBAND newtons of each
         axis are ignored: in free space f isn't exactly 0 (the wrist's own parts accelerate when z changes), and the
@@ -278,7 +361,7 @@ class KeyInsertionSERL(gym.Env):
         def K(z):
             return self.wrist.platform_stiffness(np.array([0, 0, z * self.wrist.config.z_range, 0, 0, 0]))[:3, :3]
 
-        f = self.gripper.flange_wrench(self.env.sim)[1][3:]  # wrist (flange) frame
+        f = self.gripper.leg_wrench(self.env.sim)[1][3:]  # wrist (flange) frame
         f = np.sign(f) * np.maximum(np.abs(f) - COMPENSATION_DEADBAND, 0.0)
         _, R_lock = self.env.lock_pose()
         return R_lock.T @ self.wrist_R() @ (np.linalg.solve(K(z_old), f) - np.linalg.solve(K(z_new), f))

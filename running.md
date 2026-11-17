@@ -615,15 +615,17 @@ camera".
 
 A gym env of the same task for SERL: the lock fixed, a 40 N RAM-style snap latch, the arm on a diagonal 20 kN/m
 Cartesian impedance (`CARTESIAN_IMPEDANCE`), the key starting near the keyhole, and three wrist modes: stiff, soft,
-and variable (the wrist's z as an action). A scripted oracle supplies the demos. Design, numbers and commands:
+and variable (the wrist's z as an action). The reward is success minus a per-step force penalty; the policies' F/T
+observation is the wrist's own reading from its legs. A scripted oracle supplies the demos. Design, numbers and commands:
 [scripts/key_insertion/README.md](scripts/key_insertion/README.md#serl-does-a-variable-stiffness-wrist-help). SERL
 needs its own Python 3.10 venv (`scripts/key_insertion/requirements_serl.txt`).
 
 ```bash
 cd scripts
-python -m pytest key_insertion/test_serl_env.py -q           # controller, latch, env, oracle, timestep (11 tests, ~1 min)
+python -m pytest key_insertion/test_serl_env.py -q           # controller, latch, env, oracle, F/T, timestep (14 tests, ~1 min)
 python -m key_insertion.collect_demos --mode all --n 20    # with the SERL venv's python
 bash key_insertion/launch_serl.sh variable 0               # SERL venv: learner + actor, logs in key_insertion/runs/
+python -m key_insertion.make_ft_figure                    # SERL venv: wrist vs arm F/T over the trained policies' insertions
 ```
 
 ## Validation and screenshots
@@ -646,7 +648,7 @@ The script produces:
 |---|---|
 | `models/wrists/wrist_model.py` | `WristModel` interface: MJCF string, mount body, actuators, observed joints, `format_action` |
 | `models/wrists/stewart_platform.py` | `StewartPlatformConfig` (geometry, workspace, dynamics) + `StewartPlatformWrist` (MJCF generator, closed-form IK) |
-| `models/grippers/wrist_gripper.py` | `WristGripperModel`: generic composition of any wrist with any robosuite gripper, and the flange wrench (`flange_wrench`); `StewartAlohaGripper`, `StewartAlohaGripperLegControl`, `StewartAlohaGripperLockedWrist`, `StewartWristNoGripper`, `StewartWristKey` |
+| `models/grippers/wrist_gripper.py` | `WristGripperModel`: generic composition of any wrist with any robosuite gripper, the flange wrench (`flange_wrench`, MuJoCo's own) and the wrist's own reading of it from its legs (`leg_wrench`); `StewartAlohaGripper`, `StewartAlohaGripperLegControl`, `StewartAlohaGripperLockedWrist`, `StewartWristNoGripper`, `StewartWristKey` |
 | `models/grippers/key_tool.py` | `KeyConfig` + `KeyTool`: the rigid key (blade, bow, 10 g) as a 0-dof gripper |
 | `environments/manipulation/key_insertion.py` | `KeyInsertion`: the lock (chamfered slot, spring plunger or `latch_profile`), randomization, reward, observations, contact forces |
 | `utils/pose_trajectory_interpolator.py` | `PoseTrajectoryInterpolator`: port of the robot's streaming reference (timed waypoint chunks, splice, Hermite / slerp, speed limits) |

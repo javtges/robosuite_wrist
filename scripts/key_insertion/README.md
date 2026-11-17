@@ -137,7 +137,8 @@ extra action. No human demos: a scripted oracle supplies them.
 | start | far from the lock | key tip 10–20 mm above the keyhole, ±5 mm in x and y, ±5° in yaw |
 | control | absolute tcp pose at 20 Hz | 10 Hz, deltas of the key tip's target: ±2 mm and ±1° per step (x, y, z, yaw). Each step is spread over 5 arm / wrist updates (50 Hz) |
 | limits | – | the tip target stays within ±10 mm of the keyhole's axis, ≤ 30 mm above the lock, **≤ 5 mm below the seated depth** (SERL's franka_env clips its target the same way). The episode **fails above 80 N** at the flange (2x the latch) |
-| success | plunger ≥ 90% down | same (so: past the latch); reward 1 and the episode ends, else 0. 100 steps (10 s) |
+| success | plunger ≥ 90% down | same (so: past the latch), without passing 80 N on the way. Ends the episode. 100 steps (10 s) |
+| reward | – | 1 on success, minus a force penalty every step: 0.25·(F / 80 N)², F the step's peak flange force. Pushing the latch's 40 N costs 0.06 per step, a step at the limit 0.25 (`--force_penalty 0` for success only) |
 
 **Why the box and the force limit:** without them the soft wrist wins everything. Under the 20 kN/m arm it just
 compresses ~16 mm and pushes through any detent. With the target allowed at most 5 mm below the seat, the soft wrist
@@ -151,7 +152,8 @@ key up to 40 mm. Two things handle that:
 - **In free space the arm cancels the shift.** The tip's offset from the tcp is calibrated at both ends of z, and the
   arm's target follows it, so the key stays put to within 0.5 mm. That is tested.
 - **Under load, the force stays continuous.** On every z change, the arm moves by (K_old⁻¹ − K_new⁻¹)·f, where f is
-  the flange F/T force (with a 1 N deadband) and K is the wrist's translational stiffness at the commanded pose. The
+  the wrist's own F/T force (from its legs, see below; with a 1 N deadband) and K is the wrist's translational
+  stiffness at the commanded pose. The
   wrist then carries the same force at its new stiffness.
   - Example: pushing 15 N into the latch soft, then stiffening fully, ends at 22 N (25 N peak during the ramp).
   - Without the compensation, the stored compression becomes a push of up to 48 N, which drives the key through the
@@ -162,7 +164,8 @@ key up to 40 mm. Two things handle that:
 
 **Observation** (22 values, scaled to about unit size):
 - the key tip's position, orientation error and velocity in the lock frame;
-- the flange F/T (6);
+- the F/T at the flange as the wrist measures it (6): its legs' spring and damper forces, from their encoders
+  (`WristGripperModel.leg_wrench`), not a separate F/T sensor;
 - the wrist's deflection from its commanded pose (6, as the leg encoders give it);
 - the wrist's z command.
 
@@ -178,7 +181,7 @@ Its demos have Gaussian noise (σ = 0.1) on the motion actions, not on the stiff
 | oracle, 20 demos each | seated | median length | median peak push |
 |---|---|---|---|
 | stiff | 20/20 | 50 steps | 39.9 N |
-| variable | 20/20 | 57 steps | 39.9 N |
+| variable | 20/20 | 57 steps | 40.1 N |
 | soft | 0/20 (out of travel) | 100 steps | 19.4 N |
 
 Aimed at the keyhole, stiff and variable both seat the key at the latch's 40 N (figure, a). The difference shows when
@@ -188,6 +191,35 @@ the aim is off (b, c: 1.5 mm and 3° off, no noise):
 
 So whether a learned stiff policy can match the variable one comes down to how precisely it learns to aim.
 
+## Force sensing: the wrist vs the arm
+
+Two ways to know the force at the flange without an F/T sensor, both idealized (exact models, no noise):
+- **the wrist**, from its legs (`leg_wrench`): each leg's spring force kp·(command − encoder length) plus its damping,
+  along the leg, summed at the flange, minus the weight the legs hold at rest. This is the policies' F/T observation.
+- **the arm**, from its joint torques (`KeyInsertionSERL.arm_wrench`), as a torque-sensing arm like the Franka does:
+  τ_ext = τ_model − τ_joints, with the wrist and key as a rigid payload, mapped to the flange through the Jacobian.
+
+`make_ft_figure.py` plots both against MuJoCo's own flange force over one insertion per mode:
+
+![F/T comparison, oracle](figures/ft_comparison_oracle.png)
+
+| oracle episode | wrist − MuJoCo, force RMS (max) | arm − MuJoCo | wrist − arm |
+|---|---|---|---|
+| stiff, seated, 39 N peak | 0.67 N (3.8) | 0.72 N (0.8) | 1.11 N (3.6) |
+| variable, seated, 40 N peak | 1.29 N (7.6) | 0.72 N (0.9) | 1.70 N (8.0) |
+| soft, not seated, 19 N peak | 0.15 N (0.3) | 0.57 N (0.7) | 0.67 N (1.0) |
+
+Both follow the 40 N push closely. What each one misses:
+- **The arm** reads 0.1–0.4 N / N·m at rest: its joints' Coulomb friction (0.1 N·m each), which no model predicts
+  while the arm stands still. The offset drifts as the arm moves.
+- **The wrist** misses what doesn't go through its leg springs: the inertia of the base plate and legs, and
+  vibration of the leg rods against their ball joints. A contact kick sets the rods going, for errors of up to a few
+  N (stiff, from 2.2 s; variable, while it changes stiffness). The rod vibration is likely a simulation artifact: the
+  ball joints are soft equality constraints.
+- **The springs alone are not enough.** When z changes, the leg commands move and for a moment the springs push
+  ~10 N against the dampers while the flange carries ~0. So the wrist's reading includes the dampers, which it can
+  compute from its encoder velocities (5.5 → 1.3 N RMS for the variable oracle).
+
 ## Numerics
 
 - The arm controller's stiffness, the latch's force, and whole oracle episodes give the same results at the default
@@ -195,8 +227,10 @@ So whether a learned stiff policy can match the variable one comes down to how p
 - The plunger's end stops use a 10 ms time constant here (`plunger_stop_timeconst`; the study above keeps 4 ms), so
   the key's impact on the seat after the snap doesn't depend on the timestep. With 4 ms it read 77 N at 2 ms and 44 N
   at 0.5 ms.
-- The force limit uses the flange force sampled at each of the 50 Hz updates, not at every physics step. A peak
-  shorter than 20 ms can slip past it.
+- The force limit and the force penalty use the flange force sampled at each of the 50 Hz updates, not at every
+  physics step, so a peak shorter than 20 ms slips past both. `info["max_force_physics"]` has the peak over every
+  physics step. This matters: with aim errors, the trained variable policy's true peaks are ~10 N above what the
+  reward saw, and 5 of its 100 "successes" passed 80 N between samples (see the results).
 
 ## Running it
 
@@ -204,22 +238,65 @@ SERL needs its own venv (Python 3.10, JAX 0.4.35): see `requirements_serl.txt`. 
 in `robosuite_env`. From `scripts/`:
 
 ```bash
-python -m pytest key_insertion/test_serl_env.py -q            # 11 tests, ~1 min
+python -m pytest key_insertion/test_serl_env.py -q            # 14 tests, ~1 min
 python -m key_insertion.collect_demos --mode all --n 20     # demos/{stiff,soft,variable}_20.pkl (run with the SERL venv's python:
                                                             #   numpy 2 pickles don't load in SERL's numpy 1.26)
 bash key_insertion/launch_serl.sh variable 0 5488           # learner + actor; logs in runs/variable_seed0/
 bash key_insertion/launch_serl.sh stiff 0 5498 --max_steps 50000   # concurrent runs need different ports
 python -m key_insertion.make_serl_figures                   # figures/serl_oracle.png
+python -m key_insertion.make_ft_figure --oracle             # figures/ft_comparison_oracle.png (SERL venv)
+python -m key_insertion.make_ft_figure                      # the same for the trained policies (runs/<mode>_seed0/final)
+python -m key_insertion.aim_error_eval                      # figures/aim_error_policies.png (SERL venv)
 ```
 
-Each run writes `runs/<mode>_seed<seed>/eval.csv`: every 2000 env steps, 10 episodes of the deterministic policy
-(success, length, peak push, over-force rate, mean wrist z). `train_serl.py` is SERL's async SAC state example with:
+Each run writes `runs/<mode>_seed<seed>/eval.csv`: every `--eval_period` env steps (default 2000) and at the last one,
+10 episodes of the deterministic policy (success, length, peak push, over-force rate, mean wrist z, return). At the
+end the actor saves the policy to `runs/<mode>_seed<seed>/final/`. `train_serl.py` is SERL's async SAC state example with:
 - the demos added RLPD-style, 50/50 in every critic minibatch;
 - the actor paced at 10 Hz, as on the real robot;
 - at most 0.5 learner updates (4 critic steps) per online transition.
 
 The pacing and the cap mean that runs on different machines train on the same schedule, as long as the learner keeps
 up. `learner.log` prints the ratio it reached.
+
+## Results (seed 0, force-penalty reward, 50k env steps)
+
+On the training starts (no aim error), from `runs/<mode>_seed0/eval.csv`, 10 episodes per evaluation:
+
+| | first 10/10 seated | at 50k: seated, length, peak push, return |
+|---|---|---|
+| stiff | 10k steps | 10/10, 26 steps, 39.8 N, 0.86 |
+| variable | 25k steps | 10/10, 27 steps, 36.2 N, 0.88 |
+| soft | never | 0/10 (stays off the lock: the latch is out of reach, and touching costs) |
+
+Both seat at about the latch's 40 N, the minimum any seating takes. On these starts the policy lines up before contact,
+so there is no misalignment for compliance to absorb. (The binary-reward runs, kept in `runs/binary_reward_50k/`, got
+to 10/10 at 20k and 35k steps, pushing 44–54 N.)
+
+**With an aim error into contact** (`aim_error_eval.py`): each policy sees the key relative to a keyhole shifted by
+(x, yaw) on the oracle's grid, 3 starts per case. Scored with the force the reward sees (50 Hz) and with the true
+peak (every 2 ms):
+
+| policy | force scored | seated within 80 N | over 80 N | not seated | median peak push, successes |
+|---|---|---|---|---|---|
+| stiff | 50 Hz | 48/105 | 16 | 41 | 42.7 N |
+| stiff | 2 ms | 48/105 | 16 | 41 | 44.5 N |
+| variable | 50 Hz | 100/105 | 0 | 5 | 40.8 N |
+| variable | 2 ms | 95/105 | 5 | 5 | 53.0 N |
+
+![aim errors, trained policies](figures/aim_error_policies.png)
+
+- **Variable is far more tolerant of aim error:** 95/105 seated within 80 N (true peak) against 48/105. It meets the
+  lock partly compliant (median wrist z +0.17 at first contact) and lets the chamfer line the key up. Stiff either
+  stops pushing on a wedged key and times out (41), or pushes through the limit (16, mostly at ±3° yaw).
+- **It does not push less.** Its true peaks are higher than stiff's (median 53 vs 45 N): short spikes that the 50 Hz
+  force the reward and limit see mostly misses.
+- Within an episode it does use the stiffness (z from −0.96 to +0.58 in the F/T figure's episode), which the
+  evaluations' episode-mean z (~0) hides.
+
+The F/T readings over the trained policies' insertions (`make_ft_figure.py`) agree with the oracle's:
+
+![F/T comparison, trained policies](figures/ft_comparison.png)
 
 ## Limitations
 
@@ -228,6 +305,7 @@ up. `learner.log` prints the ratio it reached.
 - The force-continuity compensation is translational only. Stiffening re-imposes the commanded tilt and yaw, which
   loads the blade against the slot's walls (5–10 N in figure a, variable, 10–20 mm deep). The oracle avoids most of it by
   re-aiming first.
+- One training seed so far, and 3 starts per aim-error case.
 - One latch profile, one box depth (5 mm) and one force limit (80 N). Each of them moves the line between "soft wins"
   and "stiff wins".
 
