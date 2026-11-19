@@ -88,22 +88,29 @@ def main():
     groups = ["all", *PHASES]
     table = {m: {} for m in MODES}
     boot = {m: {g: {k: [] for k in METRICS} for g in groups} for m in MODES}
+    mats = {}  # Gramian matrices saved to gramians.npz (keys "<mode>/<kind>/<group>/<name>")
     for m, d in data.items():
         for g, (A, B, n) in phase_models(d, m).items():
             W = gramian(A, B[:, :4], N)
+            mats.update({f"{m}/lti/{g}/W": W, f"{m}/lti/{g}/A": A, f"{m}/lti/{g}/B": B})
             s = summaries(W)
             s["n"] = n
             s["rho_A"] = float(np.max(np.abs(np.linalg.eigvals(A))))
             if m == "variable":
-                s5 = summaries(gramian(A, B, N))
+                mats[f"{m}/lti/{g}/W5"] = gramian(A, B, N)
+                s5 = summaries(mats[f"{m}/lti/{g}/W5"])
                 s.update({f"{k}_5in": v for k, v in s5.items()})
             table[m][g] = s
         eps = np.unique(d["ep"])
+        bootW = {g: [] for g in groups}
         for _ in range(B_BOOT):
             for g, (A, B, n) in phase_models(d, m, rng.choice(eps, len(eps))).items():
-                s = summaries(gramian(A, B[:, :4], N))
+                Wb = gramian(A, B[:, :4], N)
+                bootW[g].append(Wb)
+                s = summaries(Wb)
                 for k in METRICS:
                     boot[m][g][k].append(s[k])
+        mats.update({f"{m}/lti/{g}/W_boot": np.array(v) for g, v in bootW.items() if v})
     for m in MODES:
         for g in table[m]:
             for k in METRICS:
@@ -140,6 +147,10 @@ def main():
         win5 = np.full(len(d["ep"]), np.nan)
         win_pose = np.full(len(d["ep"]), np.nan)
         win_wr = np.full(len(d["ep"]), np.nan)
+        nx = As.shape[1]
+        Wwin = np.full((len(d["ep"]), nx, nx), np.nan)  # window starting at each transition (nan: fewer than N steps left)
+        Wwin5 = np.full((len(d["ep"]), nx, nx), np.nan) if m == "variable" else None
+        Wep, Wep_id = [], []
         rows = []
         for e in np.unique(d["ep"]):
             i = np.where(d["ep"] == e)[0]
@@ -149,11 +160,15 @@ def main():
                 if len(w) < N:
                     break
                 W = ltv_gramian(As[w], Bs4[w])
+                Wwin[i[s0]] = W
                 s = summaries(W)
                 win[i[s0]], win_pose[i[s0]], win_wr[i[s0]] = s["logdet"], s["logdet_pose"], s["logdet_wrench"]
                 if m == "variable":
-                    win5[i[s0]] = summaries(ltv_gramian(As[w], Bs[w]))["logdet"]
+                    Wwin5[i[s0]] = ltv_gramian(As[w], Bs[w])
+                    win5[i[s0]] = summaries(Wwin5[i[s0]])["logdet"]
             Wfull = ltv_gramian(As[i], Bs4[i])
+            Wep.append(Wfull)
+            Wep_id.append(int(e))
             k_ep = int(np.where(d["ep_id"] == e)[0][0])
             ph = d["phase"][i]
             rows.append(dict(ep=int(e), kind=int(d["kind"][i[0]]), dx=float(d["dx"][i[0]]), dyaw=float(d["dyaw"][i[0]]),
@@ -164,6 +179,11 @@ def main():
                                 for pi, p in enumerate(PHASES)},
                              mean_z=float(d["zcmd"][i].mean())))  # fmt: skip
         d["win"], d["win5"], d["win_pose"], d["win_wr"] = win, win5, win_pose, win_wr
+        mats.update({f"{m}/ltv/window/W": Wwin, f"{m}/ltv/window/ep": d["ep"], f"{m}/ltv/window/t": d["t"],
+                     f"{m}/ltv/window/phase": d["phase"], f"{m}/ltv/episode/W": np.array(Wep),
+                     f"{m}/ltv/episode/ep": np.array(Wep_id)})
+        if Wwin5 is not None:
+            mats[f"{m}/ltv/window/W5"] = Wwin5
         per_ep[m] = rows
 
     # correlations
@@ -305,6 +325,8 @@ def main():
         plt.close(fig)
         report["sim_check"] = val
 
+    np.savez_compressed(os.path.join(a.out, "gramians.npz"), N=N, state_names=np.array(NAMES + ["z"]),
+                        **{k: np.asarray(v) for k, v in mats.items()})
     with open(os.path.join(a.out, "report.json"), "w") as f:
         json.dump(report, f, indent=1, default=float)
     print(json.dumps(report, indent=1, default=float))

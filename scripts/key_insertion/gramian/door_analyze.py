@@ -30,6 +30,8 @@ BLOCKS = {"pose": POSE, "wrench": WRENCH, "mech": MECH}
 BLABEL = {"all": "log det W (17 states)", "pose": "tip pose block (6)", "wrench": "wrench block (6)",
           "mech": "door + cylinder angle block (2)"}
 N_ARM = 6
+STATE_NAMES = ["x", "y", "z", "rx", "ry", "rz", "vx", "vy", "vz", "mx", "my", "mz", "fx", "fy", "fz", "door", "cylinder"]
+INPUT_NAMES = ["arm_x", "arm_y", "arm_z", "arm_rx", "arm_ry", "arm_rz", "wrist_z"]
 
 
 def door_phase(oracle_phase, depth):  # = arm_impedance.door_study.door_phase, from the logged values
@@ -86,6 +88,7 @@ def main():
     rep = {"episodes": {}, "by_phase": {}, "correlations": {}, "data_only": {}}
     win = {m: [] for m in MODES}  # rows: dict per window
     eps = {m: [] for m in MODES}
+    mats = {m: dict(W=[], W7=[], ep=[], n=[], phase=[], z=[]) for m in MODES}  # saved to gramians.npz
     for m in MODES:
         for f in sorted(glob.glob(os.path.join(a.door, f"{m}_ep*.npz"))):
             d = dict(np.load(f))
@@ -114,9 +117,14 @@ def main():
                     W6 += stride * r[:, :N_ARM] @ r[:, :N_ARM].T
                     W7 += stride * r @ r.T
                 b6, b7 = blocks(W6), blocks(W7)
+                for key, v in dict(W=W6, W7=W7, ep=ep["k"], n=int(n), phase=int(phase[n]), z=float(U[n, 8])).items():
+                    mats[m][key].append(v)
                 win[m].append(dict(ep=ep["k"], n=int(n), phase=int(phase[n]), z=float(U[n, 8]), success=ep["result"] == "opened",
                                    **{f"ld_{k}": v for k, v in b6.items()}, **{f"ld7_{k}": v for k, v in b7.items()}))
         rep["episodes"][m] = eps[m]
+    np.savez_compressed(os.path.join(a.out, "gramians.npz"), state_names=np.array(STATE_NAMES), phases=np.array(PHASES),
+                        input_names=np.array(INPUT_NAMES),
+                        **{f"{m}/{key}": np.array(v) for m in MODES for key, v in mats[m].items()})
 
     # ---- by phase: median and IQR over windows; whole trajectory = all windows
     for m in MODES:
