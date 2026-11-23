@@ -127,7 +127,14 @@ def main():
         print("structure: OK" if not problems else "structure: PROBLEMS\n  " + "\n  ".join(problems))
         ok = not problems
         if not args.no_replay and names:
-            env = suite.make(env_args["env_name"], **kw)
+            if "ee_camera" in f["data"].attrs:  # recorded with the end-effector camera (key_insertion/door_demos.py)
+                from robosuite.models.grippers import EECameraConfig, KeyConfig
+                from key_insertion import ee_camera
+
+                cam = json.loads(f["data"].attrs["ee_camera"])
+                ee_camera.enable(camera=EECameraConfig(**cam["camera"]), key=KeyConfig(**cam["key"]))
+            # the replay compares states only: no rendering needed
+            env = suite.make(env_args["env_name"], **dict(kw, use_camera_obs=False, has_offscreen_renderer=False))
             viewer = PassiveViewer() if args.render else None
             for name in names:
                 g = f["data"][name]

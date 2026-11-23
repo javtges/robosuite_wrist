@@ -15,6 +15,10 @@ x-z plane, its front face toward the robot (+y), the hinge at the panel's -x edg
 keyhole frame (lock_site) has +z out of the door toward the robot, so the key travels -z into the lock exactly as in
 KeyInsertion, and the slot's long side is vertical. The hinge's positive direction opens the door away from the robot.
 
+Cameras: doorview, on the door frame (it follows the randomized frame pose), low and in front of the latch edge, looking
+across the door face at the keyhole: the key, the wrist and the door's swing stay in view, the arm mostly behind them.
+lockview looks straight at the keyhole from the robot's side (the wrist hides it once the key is in).
+
 Extra observations: door_angle, cylinder_angle, bolt_retraction, unlocked. Everything KeyInsertion exposes still
 applies (lock_pos / quat follow the door).
 """
@@ -163,8 +167,13 @@ class KeyDoor(KeyInsertion):
     </body>"""
         # frame body coordinates: the hinge at -W/2, the latch edge at +W/2
         strike_x = W / 2 + 0.003  # just past the latch edge
+        # doorview: 55 cm out past the latch edge, 35 cm in front of the door, 10 cm above the keyhole, aimed just below
+        # the keyhole at the door's middle (frame coordinates, which are world-aligned before the frame's yaw)
+        cam_eye = np.array([W / 2 + 0.55, 0.35, zl + 0.10])
+        cam_quat = T.convert_quat(T.mat2quat(_look_at(cam_eye, [0.0, 0.0, zl - 0.02])), to="wxyz")
         frame = f"""<body name="door_frame" pos="0 0 0">
       <site name="door_frame_site" pos="0 0 0" size="0.002" rgba="0 0 1 0" group="1"/>
+      <camera name="doorview" mode="fixed" pos="{" ".join(f"{v:.6g}" for v in cam_eye)}" quat="{" ".join(f"{v:.8g}" for v in cam_quat)}"/>
       <geom name="frame_hinge_post" type="box" pos="{hinge_x - 0.03:.6g} 0 {H / 2:.6g}" size="0.025 {Tk / 2:.6g} {H / 2:.6g}" rgba="{rgba_frame}" {solid}/>
       <geom name="frame_latch_post" type="box" pos="{W / 2 + 0.03:.6g} 0 {(zl - 0.08) / 2:.6g}" size="0.025 {Tk / 2:.6g} {(zl - 0.08) / 2:.6g}" rgba="{rgba_frame}" {solid}/>
       <geom name="frame_strike_riser" type="box" pos="{W / 2 + 0.03:.6g} {-bt / 2 - 0.0095:.6g} {(zl - 0.08 + zl - 0.018) / 2:.6g}" size="0.025 0.004 {(0.08 - 0.018) / 2:.6g}" rgba="{rgba_frame}" {solid}/>

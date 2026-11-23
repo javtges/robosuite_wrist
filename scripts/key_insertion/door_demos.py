@@ -8,6 +8,8 @@ every step (wrist z: +1 extended / soft, -1 contracted / stiff): that trace is t
     python validate_demos.py ../demos/door_smoke.hdf5                                       # structure + replay
     python -m key_insertion.door_demos --episodes 200 --shard 0/4 --out ../demos/door_s0.hdf5   # one of four shards
     python -m key_insertion.door_demos --episodes 200 --shard 1/4 --out ../demos/door_s1.hdf5   # (run in parallel)
+    python -m key_insertion.door_demos --episodes 4 --cameras wrist --out ../demos/door_cam_smoke.hdf5        # visuomotor
+    python -m key_insertion.door_demos --episodes 4 --cameras wrist doorview --out ../demos/door_cam2_smoke.hdf5
 
 Each episode: a random door pose (+-2 cm, +-5 deg), an aiming error drawn inside the soft wrist's tolerance
 (dx +-1.5 mm, dyaw +-3 deg), a lock friction from --lock-frictions (normal and stiff locks, so the turn needs the
@@ -18,6 +20,14 @@ success=False unless --successes-only.
 Per-episode attrs beyond the teleop's: schedule, dx_mm, dyaw_deg, cylinder_friction, result, n_switches. Observation
 keys are KeyDoor's (lock pose, key tip in the lock, plunger, flange wrench, door / cylinder / bolt / unlocked, the
 robot's tcp and eef poses, gripper qpos = fingers + wrist pose + leg offsets).
+
+--cameras adds image observations: 'wrist' is HSA-UMI's end-effector camera (key_insertion/ee_camera.py; it also puts
+the measured key mount on the wrist, as that camera needs), any other name is one of KeyDoor's scene cameras
+(doorview, aimed at the door and keyhole from the latch side, is the one made for this; also frontview, agentview,
+sideview, birdview, lockview, robot0_robotview). Images are stored in obs/ and next_obs/ as
+<camera>_image (N, H, W, 3) uint8, upright (row 0 at the top, as robomimic's env wrapper returns them), gzip-compressed,
+at --camera-size. The file's env_args then carry the camera settings, and data.attrs["ee_camera"] holds the camera and
+key configs that ee_camera.enable() must reproduce before building the env (validate_demos.py does this).
 """
 
 import argparse
@@ -37,13 +47,20 @@ from arm_impedance.door_study import PHASES, SCHEDULES, door_phase  # noqa: E402
 from arm_impedance.wrist_study import WristScheduler  # noqa: E402
 from demo_writer import DemoWriter  # noqa: E402
 from hsa_robots import DEFAULT_ROBOT, ROBOTS, robot_key, robot_name  # noqa: E402
+from key_insertion import ee_camera  # noqa: E402  (after robosuite: its MUJOCO_GL default then has no effect)
 from key_insertion.door_oracle import DoorOracle  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def make_env_args(robot, control_freq, cylinder_friction):
-    """robomimic env_args: everything validate_demos.py / a rollout needs to rebuild the env (rendering off)"""
+def camera_names(cameras):
+    """--cameras -> the model's camera names ('wrist' -> the end-effector camera)"""
+    return [ee_camera.CAMERA if c == "wrist" else c for c in cameras]
+
+
+def make_env_args(robot, control_freq, cylinder_friction, cameras=(), camera_size=(120, 160)):
+    """robomimic env_args: everything validate_demos.py / a rollout needs to rebuild the env (rendering off unless
+    @cameras: then offscreen, with those cameras' images in the observations)"""
     robot = robot_name(robot)
     cfg = load_composite_controller_config(robot=robot)
     cfg["body_parts"]["right"].update(input_type="absolute", input_ref_frame="base")
@@ -59,7 +76,16 @@ def make_env_args(robot, control_freq, cylinder_friction):
         ignore_done=True,
         hard_reset=False,
     )
+    if cameras:
+        names = camera_names(cameras)
+        env_kwargs.update(use_camera_obs=True, has_offscreen_renderer=True, camera_names=names,
+                          camera_heights=[camera_size[0]] * len(names), camera_widths=[camera_size[1]] * len(names))  # fmt: skip
     return {"env_name": "KeyDoor", "type": 1, "env_version": suite.__version__, "env_kwargs": env_kwargs}
+
+
+def upright(obs):
+    """robosuite renders row 0 at the bottom; store images the way robomimic's env wrapper returns them"""
+    return {k: (v[::-1].copy() if k.endswith("_image") else v) for k, v in obs.items()}
 
 
 def record_episode(env, writer, schedule, dx, dyaw, attrs, max_seconds=40.0, hook_cls=WristScheduler):
@@ -97,7 +123,7 @@ def record_episode(env, writer, schedule, dx, dyaw, attrs, max_seconds=40.0, hoo
         obs, reward, _, _ = env.step(action)
         row = oracle.log_row()
         hook(env, oracle, row)
-        writer.add(state, action, reward, obs_before, obs, oracle.phase, 0, gripper.wrist.stiffness_scale)
+        writer.add(state, action, reward, upright(obs_before), upright(obs), oracle.phase, 0, gripper.wrist.stiffness_scale)
         steps += 1
     result = oracle.result or "timeout"
     writer._attrs.update(result=result, n_switches=hook.n_switches, switch_tool_mm=round(hook.switch_tool_mm, 2))
@@ -118,6 +144,8 @@ def main():
     p.add_argument("--control-freq", type=float, default=20.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--successes-only", action="store_true")
+    p.add_argument("--cameras", nargs="+", default=[], help="image observations: 'wrist' (end-effector camera) and/or scene camera names")
+    p.add_argument("--camera-size", type=int, nargs=2, default=[120, 160], metavar=("H", "W"), help="image size (default 120 160, the camera's 4:3)")
     args = p.parse_args()
 
     i, n = (int(x) for x in args.shard.split("/"))
@@ -128,6 +156,10 @@ def main():
         for k in range(args.episodes)
     ]  # fmt: skip
     mine = [c for c in plan if c["k"] % n == i]
+    if "wrist" in args.cameras:
+        ee_camera.enable()  # class-level: every env built below has the camera and the measured key mount
+        cam_attrs = json.dumps(dict(camera=dataclasses.asdict(ee_camera.StewartWristKey.camera_config),
+                                    key=dataclasses.asdict(ee_camera.StewartWristKey.key_config)))  # fmt: skip
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     envs, writers = {}, {}
     print(f"shard {i}/{n}: {len(mine)} of {args.episodes} episodes -> {args.out}", flush=True)
@@ -136,11 +168,13 @@ def main():
         for c in mine:
             fr = c["friction"]
             if fr not in envs:
-                env_args = make_env_args(args.robot, args.control_freq, fr)
+                env_args = make_env_args(args.robot, args.control_freq, fr, args.cameras, args.camera_size)
                 envs[fr] = suite.make(env_args["env_name"], **env_args["env_kwargs"])
                 # one hdf5 per lock friction: the file's env_args must match every demo in it
                 path = args.out if len(args.lock_frictions) == 1 else args.out.replace(".hdf5", f"_lock{fr:g}.hdf5")
                 writers[fr] = DemoWriter(path, env_args, dataclasses.asdict(envs[fr].robots[0].gripper["right"].wrist.config))
+                if "wrist" in args.cameras:
+                    writers[fr].data.attrs["ee_camera"] = cam_attrs
             env = envs[fr]
             env.rng = np.random.default_rng(c["seed"])
             result, steps = record_episode(env, writers[fr], args.schedule, c["dx"], c["dyaw"], dict(cylinder_friction=fr, plan_index=c["k"]))

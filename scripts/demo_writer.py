@@ -11,14 +11,15 @@ Writes teleop demonstrations to one hdf5 file that both robomimic and robosuite'
         actions       (N, 13)               the absolute teleop target: tcp pos (3) + rotvec (3), base frame;
                                             wrist pose (6, normalized); gripper (1)
         rewards, dones (N,)                 dones[-1] = 1
-        obs/<key>, next_obs/<key>           every non-image observation
+        obs/<key>, next_obs/<key>           every observation; <camera>_image (N, H, W, 3) uint8 ones gzip-compressed
         teleop/stage  (N,)                  HSA-UMI's stage counter (Space)
         teleop/mode   (N,)                  what the input drove: 0 arm, 1 wrist, 2 nullspace (the wrist, with the arm
                                             cancelling it; see nullspace/README.md)
         teleop/wrist_stiffness_scale (N,)   leg stiffness multiplier (x toggles it). Not part of the MuJoCo state:
                                             a replay must set it per step (validate_demos.py does)
 
-Images are not stored; robomimic's dataset_states_to_obs.py renders them from the states.
+The teleop records no images (robomimic's dataset_states_to_obs.py renders them from the states); a recorder that
+puts camera observations in obs (key_insertion/door_demos.py --cameras) gets them stored, compressed.
 Restarting with the same file appends demos. Each demo is written and flushed when it is saved.
 """
 
@@ -95,7 +96,11 @@ class DemoWriter:
         g.create_dataset("dones", data=dones)
         for group, seq in (("obs", obs), ("next_obs", next_obs)):
             for k in seq[0]:
-                g.create_dataset(f"{group}/{k}", data=np.array([o[k] for o in seq]))
+                arr = np.array([o[k] for o in seq])
+                if k.endswith("_image"):  # one chunk per frame, so a loader can read single frames
+                    g.create_dataset(f"{group}/{k}", data=arr, compression="gzip", compression_opts=4, chunks=(1, *arr.shape[1:]))
+                else:
+                    g.create_dataset(f"{group}/{k}", data=arr)
         g.create_dataset("teleop/stage", data=np.array(stage, dtype=np.int64))
         g.create_dataset("teleop/mode", data=np.array(mode, dtype=np.int64))
         g.create_dataset("teleop/wrist_stiffness_scale", data=np.array(scale, dtype=np.float64))
