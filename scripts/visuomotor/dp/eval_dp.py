@@ -11,7 +11,9 @@ Run with robosuite_env from scripts/ (on a headless Linux server MUJOCO_GL defau
 
 --episodes is per lock friction. Writes --out (default <ckpt dir>/eval_<ckpt stem>.json): per-episode rows and a
 summary overall and per friction (success rate, time to success, peak flange force, reached seated / unlocked /
-opened, max cylinder and door angles, mean wrist z). Videos (wrist | scene camera) go next to it.
+opened, max cylinder and door angles, mean wrist z). Videos (wrist | scene camera) go next to it. Each row also has the
+key tip's aim in the keyhole frame (tip_aim) at first contact (flange force > CONTACT_N), on reaching the lock face (entry, depth >= ENTRY_MM), at its closest approach to
+the keyhole and at the end.
 """
 
 import argparse
@@ -70,6 +72,20 @@ def _write_video(frames, path, fps):
         return path
 
 
+CONTACT_N = 2.0  # flange force (N) that counts as first contact
+ENTRY_MM = -1.0  # tip depth (mm) that counts as reaching the lock face (entry)
+
+
+def tip_aim(env):
+    """The key tip in the keyhole frame, as key_insertion/oracle.py logs it: x across the slot, y along its long side,
+    depth below the lock face (mm, negative = still in front), yaw about the keyhole axis and tilt off it (deg)"""
+    p, R = env.key_tip_in_lock()
+    return dict(x_mm=float(p[0] * 1e3), y_mm=float(p[1] * 1e3), depth_mm=float(-p[2] * 1e3),
+                lateral_mm=float(np.linalg.norm(p[:2]) * 1e3), dist_mm=float(np.linalg.norm(p) * 1e3),
+                yaw_deg=float(np.degrees(np.arctan2(R[0, 1], R[1, 1]))),
+                tilt_deg=float(np.degrees(np.arccos(np.clip(-R[2, 2], -1.0, 1.0)))))  # fmt: skip
+
+
 def run_episode(task):
     """one rollout in this process's env -> metrics dict (task: friction, index, seed, video path or None)"""
     from key_insertion.door_oracle import DoorOracle
@@ -87,6 +103,7 @@ def run_episode(task):
     t0 = env.sim.data.time
     peak_f, cyl_max, door_max, zs, frames = 0.0, -np.inf, -np.inf, [], []
     seated = unlocked = success = False
+    contact, entry, closest = None, None, None  # aim at first contact and at the lock face; closest approach
     result, wall = "timeout", time.time()
     while env.sim.data.time < s["max_seconds"]:
         if video:
@@ -96,6 +113,13 @@ def run_episode(task):
         obs = common.obs_extras(env, raw, action[6:12])
         f = float(np.linalg.norm(oracle.flange_force()))
         peak_f = max(peak_f, f)
+        aim = tip_aim(env)
+        if closest is None or aim["dist_mm"] < closest["dist_mm"]:
+            closest = aim
+        if entry is None and aim["depth_mm"] >= ENTRY_MM:
+            entry = dict(aim, t=float(env.sim.data.time - t0), wrist_z=float(runner.wrist_cmd[2]))
+        if contact is None and f > CONTACT_N:
+            contact = dict(aim, t=float(env.sim.data.time - t0), wrist_z=float(runner.wrist_cmd[2]))
         cyl_max, door_max = max(cyl_max, env.cylinder_angle()), max(door_max, env.door_angle())
         seated |= bool(env.key_seated())
         unlocked |= bool(env.unlocked())
@@ -111,7 +135,8 @@ def run_episode(task):
                time=t, time_to_success=t if success else None, steps=len(zs), peak_flange_force=peak_f,
                reached_seated=seated, reached_unlocked=unlocked, max_cylinder_deg=float(np.degrees(cyl_max)),
                max_door_deg=float(np.degrees(door_max)), final_door_deg=float(np.degrees(env.door_angle())),
-               mean_wrist_z=float(np.mean(zs)) if zs else None, wall_s=time.time() - wall)  # fmt: skip
+               mean_wrist_z=float(np.mean(zs)) if zs else None, wall_s=time.time() - wall,
+               first_contact=contact, entry=entry, closest_approach=closest, final_tip=tip_aim(env))  # fmt: skip
     if video and frames:
         out["video"] = _write_video(frames, video, runner.control_freq)
     return out
