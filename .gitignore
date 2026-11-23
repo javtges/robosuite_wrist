@@ -24,6 +24,8 @@ screenshots/
 .idea/
 
 runs/
+scripts/key_insertion/gramian/
+CLAUDE.md
 
 # Episode videos from scripts/arm_impedance/small_eval.py --video (tens of MB per run)
 scripts/arm_impedance/**/videos/
